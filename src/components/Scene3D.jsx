@@ -165,7 +165,7 @@ function ReliefClippedMaterial({ isGenerated, displacementScale, isAdjustMode, c
     side: DoubleSide,
     roughness: 0.4,
     metalness: 0.1,
-    transparent: true,
+    transparent: false,
     alphaTest: 0.05,
   }
   if (isGenerated) {
