@@ -1,0 +1,3 @@
+[submodule "backend/depth_service/pixel-perfect-depth"]
+	path = backend/depth_service/pixel-perfect-depth
+	url = https://github.com/gangweix/pixel-perfect-depth.git
