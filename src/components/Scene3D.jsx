@@ -2,7 +2,7 @@ import { useRef, useMemo, useState, useCallback, useEffect } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import { OrbitControls } from "@react-three/drei"
 import * as THREE from "three"
-
+console.log("🔥 Scene3D from components loaded")
 const { DoubleSide } = THREE
 
 const PHONE_W = 7
@@ -23,18 +23,18 @@ function clampRelief(pos) {
   }
 }
 
-const DEPTH_MAP_URL = "/test-depth.jpg"
+const DEFAULT_DEPTH_MAP_URL = "http://localhost:8000/depth/latest"
 
 function SafeDisplacementMaterial({ displacementScale }) {
   const [texture, setTexture] = useState(null)
   const textureRef = useRef(null)
   const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
-  const scaleValue = (scale / 10) * 0.5
+  const scaleValue = (scale / 10) * 5
 
   useEffect(() => {
     const loader = new THREE.TextureLoader()
     loader.load(
-      DEPTH_MAP_URL,
+      DEFAULT_DEPTH_MAP_URL + "?t=" + Date.now(),
       (tex) => {
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping
         textureRef.current = tex
@@ -70,37 +70,55 @@ function SafeDisplacementMaterial({ displacementScale }) {
   )
 }
 
-function ReliefClippedMaterial({ isGenerated, displacementScale, isAdjustMode, caseWidth, caseHeight, depthTexture }) {
+function ReliefClippedMaterial({ 
+  isGenerated, 
+  displacementScale, 
+  isAdjustMode, 
+  caseWidth, 
+  caseHeight, 
+  depthTexture,
+  depthMapUrl
+ }) {
   const [texture, setTexture] = useState(null)
   const textureRef = useRef(null)
   const matRef = useRef(null)
   const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
-  const scaleValue = (scale / 10) * 0.5
+  const scaleValue = (scale / 10) * 5
 
   useEffect(() => {
-    if (depthTexture) {
-      textureRef.current = depthTexture
-      setTexture(depthTexture)
-      return
+  if (depthTexture) {
+    textureRef.current = depthTexture
+    setTexture(depthTexture)
+    return
+  }
+
+  if (!depthMapUrl) return
+
+  const loader = new THREE.TextureLoader()
+
+  loader.load(
+    depthMapUrl + "?t=" + Date.now(),
+    (tex) => {
+      tex.colorSpace = THREE.NoColorSpace
+      tex.minFilter = THREE.LinearFilter
+      tex.magFilter = THREE.LinearFilter
+      tex.generateMipmaps = false
+      tex.needsUpdate = true
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      textureRef.current = tex
+      setTexture(tex)
+    },
+    undefined,
+    () => setTexture(null)
+  )
+
+  return () => {
+    if (textureRef.current) {
+      textureRef.current.dispose()
+      textureRef.current = null
     }
-    const loader = new THREE.TextureLoader()
-    loader.load(
-      DEPTH_MAP_URL,
-      (tex) => {
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-        textureRef.current = tex
-        setTexture(tex)
-      },
-      undefined,
-      () => setTexture(null)
-    )
-    return () => {
-      if (textureRef.current && !depthTexture) {
-        textureRef.current.dispose()
-        textureRef.current = null
-      }
-    }
-  }, [depthTexture])
+  }
+}, [depthTexture, depthMapUrl])
 
   useEffect(() => {
     const mat = matRef.current
@@ -165,7 +183,7 @@ function ReliefClippedMaterial({ isGenerated, displacementScale, isAdjustMode, c
     side: DoubleSide,
     roughness: 0.4,
     metalness: 0.1,
-    transparent: false,
+    transparent: true,
     alphaTest: 0.05,
   }
   if (isGenerated) {
@@ -241,12 +259,14 @@ function pointerToPlaneIntersection(clientX, clientY, camera, gl, plane, target)
  * 调整模式下在 mesh 上绑定指针事件实现二维拖拽，并仅在浮雕上设置 grab/grabbing 光标。
  */
 function ReliefPlane({
+  depthVersion,
   isGenerated,
   isAdjustMode,
   reliefPosition,
   reliefSize,
   reliefHeight,
   reliefRotation,
+  depthMapUrl,
 }) {
   const meshRef = useRef(null)
   const [planeDims, setPlaneDims] = useState({ w: 7, h: 7 })
@@ -259,9 +279,15 @@ function ReliefPlane({
   const scale = 0.3 + ((sizeVal - 20) / 180) * 2.2
   useEffect(() => {
     const loader = new THREE.TextureLoader()
+    const url = depthMapUrl || DEFAULT_DEPTH_MAP_URL
     loader.load(
-      DEPTH_MAP_URL,
+      url + "?t=" + Date.now(),
       (tex) => {
+        tex.colorSpace = THREE.NoColorSpace   // ⭐关键
+        tex.minFilter = THREE.LinearFilter
+        tex.magFilter = THREE.LinearFilter
+        tex.generateMipmaps = false
+        tex.needsUpdate = true
         const img = tex.image
         if (img && img.width && img.height) {
           const aspect = img.width / img.height
@@ -282,7 +308,7 @@ function ReliefPlane({
     return () => {
       // keep texture for material reuse; do not dispose here to avoid double free
     }
-  }, [])
+  }, [depthMapUrl, depthVersion])
   const rotTargetRef = useRef(0)
   useEffect(() => {
     rotTargetRef.current = (reliefRotation * Math.PI) / 180
@@ -311,7 +337,7 @@ function ReliefPlane({
       geometry={geometry}
       visible={isGenerated}
       position={[reliefPosition.x, RELIEF_Y, reliefPosition.y]}
-      scale={[scale, scale, 1]}
+      scale={[scale, scale,1]}
       castShadow
       receiveShadow
     >
@@ -322,6 +348,7 @@ function ReliefPlane({
         caseWidth={PHONE_W}
         caseHeight={PHONE_H}
         depthTexture={depthTex}
+        depthMapUrl={depthMapUrl}
       />
     </mesh>
   )
@@ -436,6 +463,7 @@ function PhoneCaseBox({ isAdjustMode }) {
 }
 
 export function Scene3D({
+  depthVersion,
   isGenerated,
   isAdjustMode,
   reliefPosition,
@@ -443,6 +471,7 @@ export function Scene3D({
   embossHeight,
   embossSize,
   reliefRotation,
+  depthMapUrl,
 }) {
   const controlsRef = useRef(null)
 
@@ -465,12 +494,14 @@ export function Scene3D({
       <group>
         <PhoneCaseBox isAdjustMode={isAdjustMode} />
         <ReliefPlane
+          depthVersion={depthVersion}
           isGenerated={isGenerated}
           isAdjustMode={isAdjustMode}
           reliefPosition={reliefPosition}
           reliefSize={embossSize}
           reliefHeight={embossHeight}
           reliefRotation={reliefRotation}
+          depthMapUrl={depthMapUrl}
         />
         {(isAdjustMode && isGenerated) && (
           <AdjustCapturePlane

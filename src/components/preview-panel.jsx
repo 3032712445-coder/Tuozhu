@@ -3,7 +3,10 @@ import { Canvas } from "@react-three/fiber"
 import { Scene3D } from "./Scene3D"
 import { ErrorBoundary } from "./ErrorBoundary"
 
+console.log("🔥 PreviewPanel from components loaded")
 export function PreviewPanel({
+  depthVersion,
+  depthUrl,
   isGenerated,
   isAdjustMode,
   onAdjustModeToggle,
@@ -12,6 +15,7 @@ export function PreviewPanel({
   embossHeight,
   embossSize,
   reliefRotation,
+  depthMapUrl,
 }) {
   return (
     <div className="relative flex h-full min-h-[400px] flex-col rounded-lg border border-border/60 bg-muted/30 p-4">
@@ -42,6 +46,8 @@ export function PreviewPanel({
               }
             >
               <Scene3D
+                depthVersion={depthVersion}
+                depthMapUrl={depthUrl}
                 isGenerated={isGenerated}
                 isAdjustMode={isAdjustMode}
                 reliefPosition={reliefPosition}
@@ -49,6 +55,7 @@ export function PreviewPanel({
                 embossHeight={embossHeight ?? [5]}
                 embossSize={embossSize ?? [60]}
                 reliefRotation={reliefRotation ?? 0}
+                
               />
             </Suspense>
           </Canvas>

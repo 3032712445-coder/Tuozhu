@@ -5,20 +5,47 @@ import { PhoneModelSelector } from "@/components/phone-model-selector"
 import { ImageInputArea } from "@/components/image-input-area"
 import { EmbossParameters } from "@/components/emboss-parameters"
 import { PreviewPanel } from "@/components/preview-panel"
+console.log("🔥 App.jsx in src running")
+async function generateDepth(file) {
 
+  if (!(file instanceof File)) {
+    console.error("不是文件:", file)
+    throw new Error("上传对象不是文件")
+  }
+
+  const formData = new FormData()
+  formData.append("file", file)
+
+  const res = await fetch("http://127.0.0.1:8000/depth", {
+    method: "POST",
+    body: formData
+  })
+
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("后端错误:", t)
+    throw new Error("生成失败")
+  }
+
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}
 export default function App() {
   const [phoneModel, setPhoneModel] = useState("")
   const [uploadedImage, setUploadedImage] = useState(null)
+  const [uploadedFile, setUploadedFile] = useState(null)
+  const [depthUrl, setDepthUrl] = useState(null)
   const [aiPrompt, setAiPrompt] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
-
+  const [isDepthGenerating, setIsDepthGenerating] = useState(false)
   const [embossHeight, setEmbossHeight] = useState([5])
   const [embossSize, setEmbossSize] = useState([60])
   const [reliefRotation, setReliefRotation] = useState(0)
+  const [depthVersion, setDepthVersion] = useState(0)
   const [isGenerated, setIsGenerated] = useState(false)
   const [isAdjustMode, setIsAdjustMode] = useState(false)
   const [reliefPosition, setReliefPosition] = useState({ x: 0, y: 0 })
-
+  
   const handleAiGenerate = () => {
     setIsGenerating(true)
     setTimeout(() => {
@@ -26,9 +53,35 @@ export default function App() {
     }, 2000)
   }
 
-  const handleGenerate3D = () => {
-    setIsGenerated(true)
+  const handleGenerate3D = async () => {
+    console.log("开始生成")
+    console.log("当前上传文件：", uploadedFile, uploadedFile instanceof File)
+
+    if (!uploadedFile) {
+    alert("请先上传图片")
+    return
   }
+
+  try {
+    setIsDepthGenerating(true)
+
+    const result = await generateDepth(uploadedFile)
+
+    console.log("深度结果：", result)
+
+    // TODO：这里后面接3D
+    setDepthUrl(result)
+    setDepthVersion(v => v + 1)
+    setIsGenerated(true)
+
+  } catch (err) {
+    console.error(err)
+    alert("生成失败")
+
+  } finally {
+    setIsDepthGenerating(false)
+  }
+}
 
   const handleExport = () => {
     // placeholder for export logic
@@ -71,11 +124,18 @@ export default function App() {
             {/* Image input */}
             <ImageInputArea
               uploadedImage={uploadedImage}
-              onImageUpload={setUploadedImage}
+              onImageUpload={(file, url) => {
+              console.log("父组件收到 file:", file, file instanceof File)
+              console.log("父组件收到 url:", url)
+
+              setUploadedFile(file)
+              setUploadedImage(url)
+          }}
               aiPrompt={aiPrompt}
               onAiPromptChange={setAiPrompt}
               onAiGenerate={handleAiGenerate}
               isGenerating={isGenerating}
+              isDepthGenerating={isDepthGenerating}
             />
 
             {/* Separator */}
@@ -117,6 +177,8 @@ export default function App() {
         {/* Right preview panel */}
         <section className="flex flex-1 flex-col p-6">
           <PreviewPanel
+            depthVersion={depthVersion}
+            depthUrl={depthUrl}
             isGenerated={isGenerated}
             isAdjustMode={isAdjustMode}
             onAdjustModeToggle={() => setIsAdjustMode((v) => !v)}

@@ -52,6 +52,39 @@
     - phone-model-selector.jsx：手机型号选择入口（当前未实现逻辑，占位）。
     - ErrorBoundary.jsx：运行期错误边界，保护 3D 视图不崩溃。
     - ui/button.jsx：通用按钮组件。
+    
+    新增的深度图模型放在:
+    ├─ backend/
+    │ ├─ depth_service/ # FastAPI 后端服务
+      │ ├─ pixel-perfect-depth/ # Pixel-Perfect-Depth 模型源码 + 请自己新建一个checkpoints文件夹放在这里面
+      │ ├─ uploads/ # 临时上传图片缓存
+      │ ├─ api.py/
+      │ └─ outputs/ # 生成的深度图保存
+
+## Pixel-perfect-depth说明
+
+ 一、后端 FastAPI 服务（Depth 生成）
+
+ 1.安装依赖
+
+  ```bash
+  cd backend/depth_service
+  pip install -r requirements.txt
+  如果没有requirements.txt，可以手动安装：
+  pip install fastapi uvicorn pillow numpy opencv-python torch torchvision
+  
+
+ 2.下载仓库为https://github.com/gangweix/pixel-perfect-depth，
+  在他们的Readme里找到：![alt text](image.png)
+  按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型并放到checkpoints文件夹
+  形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
+     
+ 3.启动服务
+  cd backend/depth_service
+  uvicorn api:app --reload --host 0.0.0.0 --port 8000
+  启动后你应该可以访问：
+  http://localhost:8000（FastAPI，测试是否成功启动时点击Post/depth、Try it out、选择文件、Execute，等待一阵之后你的outputs文件夹里应该能看到结果）
+  http://localhost:8000/depth/latest（用于查看你在3D浮雕生成器里上传的图的灰度深度图结果）
 
 ## 常用脚本
 

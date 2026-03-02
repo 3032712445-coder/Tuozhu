@@ -1,22 +1,53 @@
-export function ImageInputArea({ uploadedImage, onImageUpload, aiPrompt, onAiPromptChange, onAiGenerate, isGenerating }) {
-  const handleFile = (e) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      const url = URL.createObjectURL(file)
-      onImageUpload(url)
-    }
-  }
+export function ImageInputArea({
+  uploadedImage,
+  onImageUpload,
+  aiPrompt,
+  onAiPromptChange,
+  onAiGenerate,
+  isGenerating,
+  isDepthGenerating,
+}) {
+console.log("🔥 ImageInputArea 加载成功")
+const handleFile = (e) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+
+  const url = URL.createObjectURL(file)
+
+  console.log("子组件 file:", file, file instanceof File)
+  console.log("子组件 url:", url)
+
+  // 顺序：先 file，后 url
+  onImageUpload(file, url)
+}
+
   return (
     <div className="space-y-3">
-      <label className="text-sm font-medium text-foreground">上传图片 / AI 生成</label>
+      <label className="text-sm font-medium text-foreground">
+        上传图片 / AI 生成
+      </label>
+
       <div className="rounded-lg border border-dashed border-border/60 p-4 text-center">
         {uploadedImage ? (
-          <img src={uploadedImage} alt="上传" className="mx-auto max-h-32 rounded object-contain" />
+          <img
+            src={uploadedImage}
+            alt="上传"
+            className="mx-auto max-h-32 rounded object-contain"
+          />
         ) : (
-          <p className="text-sm text-muted-foreground">拖拽或点击上传</p>
+          <p className="text-sm text-muted-foreground">
+            拖拽或点击上传
+          </p>
         )}
-        <input type="file" accept="image/*" onChange={handleFile} className="mt-2 text-sm" />
+
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleFile}
+          className="mt-2 text-sm"
+        />
       </div>
+
       <input
         type="text"
         placeholder="AI 描述（可选）"
@@ -24,6 +55,7 @@ export function ImageInputArea({ uploadedImage, onImageUpload, aiPrompt, onAiPro
         onChange={(e) => onAiPromptChange(e.target.value)}
         className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
       />
+
       <button
         type="button"
         onClick={onAiGenerate}
@@ -32,6 +64,12 @@ export function ImageInputArea({ uploadedImage, onImageUpload, aiPrompt, onAiPro
       >
         {isGenerating ? "生成中…" : "AI 生成"}
       </button>
+
+      {isDepthGenerating && (
+        <p className="text-xs text-muted-foreground">
+          正在计算 3D 深度信息...
+        </p>
+      )}
     </div>
   )
 }
