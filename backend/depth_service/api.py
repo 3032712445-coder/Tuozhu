@@ -18,6 +18,8 @@ import matplotlib
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from pydantic import BaseModel
+import httpx
 
 from ppd.models.ppd import PixelPerfectDepth
 from ppd.utils.set_seed import set_seed
@@ -165,6 +167,29 @@ async def generate_depth(file: UploadFile = File(...)):
         content=result,
         media_type="image/png"
     )
+
+class DepthByUrlRequest(BaseModel):
+    image_url: str
+
+@app.post("/depth/by-url")
+async def generate_depth_by_url(payload: DepthByUrlRequest):
+    print("📥 收到 URL:", payload.image_url)
+    uid = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_DIR, uid + ".png")
+    output_path = os.path.join(OUTPUT_DIR, uid + ".png")
+    async with httpx.AsyncClient(timeout=60.0) as client_http:
+        r = await client_http.get(payload.image_url)
+        r.raise_for_status()
+        data = r.content
+    with open(input_path, "wb") as f:
+        f.write(data)
+    print("💾 已保存:", input_path)
+    print("🚀 开始推理...")
+    run_depth(input_path, output_path)
+    print("✅ 推理完成:", output_path)
+    with open(output_path, "rb") as f:
+        result = f.read()
+    return Response(content=result, media_type="image/png")
 
 @app.get("/depth/latest")
 def get_latest_depth():

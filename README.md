@@ -80,14 +80,10 @@
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
      
  3.启动服务
-  cd backend/depth_service
-  uvicorn api:app --reload --host 0.0.0.0 --port 8000
-  启动后你应该可以访问：
-  http://localhost:8000（FastAPI，测试是否成功启动时点击Post/depth、Try it out、选择文件、Execute，等待一阵之后你的outputs文件夹里应该能看到结果）
-  http://localhost:8000/depth/latest（用于查看你在3D浮雕生成器里上传的图的灰度深度图结果）
+  python -m uvicorn backend.depth_service.api:app --host 0.0.0.0 --port 8001 --reload
 
 ## 常用脚本
-
+’python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload‘：启动智谱服务
 - `npm install`：安装依赖。
 - `npm run dev`：启动开发服务器进行本地预览。
 - `npm run build`：打包生成静态文件（dist）。

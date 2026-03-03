@@ -27,6 +27,7 @@ __pycache__/
 # ===== Env =====
 .env
 
+backend/depth_service/pixel-perfect-depth/*
 # runtime files
 backend/depth_service/outputs/*
 backend/depth_service/uploads/*

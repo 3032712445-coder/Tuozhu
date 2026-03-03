@@ -16,7 +16,7 @@ async function generateDepth(file) {
   const formData = new FormData()
   formData.append("file", file)
 
-  const res = await fetch("http://127.0.0.1:8000/depth", {
+  const res = await fetch("http://127.0.0.1:8001/depth", {
     method: "POST",
     body: formData
   })
@@ -27,6 +27,38 @@ async function generateDepth(file) {
     throw new Error("生成失败")
   }
 
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}
+async function generateImage(prompt) {
+  const res = await fetch("http://127.0.0.1:8000/generate-image", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ prompt }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("智谱后端错误:", t)
+    throw new Error("AI 生成失败")
+  }
+  const data = await res.json()
+  return data.image_url
+}
+async function generateDepthByUrl(imageUrl) {
+  const res = await fetch("http://127.0.0.1:8001/depth/by-url", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ image_url: imageUrl }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("深度服务错误:", t)
+    throw new Error("深度生成失败")
+  }
   const blob = await res.blob()
   return URL.createObjectURL(blob)
 }
@@ -46,42 +78,60 @@ export default function App() {
   const [isAdjustMode, setIsAdjustMode] = useState(false)
   const [reliefPosition, setReliefPosition] = useState({ x: 0, y: 0 })
   
-  const handleAiGenerate = () => {
-    setIsGenerating(true)
-    setTimeout(() => {
+  const handleAiGenerate = async () => {
+    try {
+      setIsGenerating(true)
+      console.log("开始 AI 生成，prompt:", aiPrompt)
+      const imageUrl = await generateImage(aiPrompt || "")
+      console.log("AI 生成图片 URL:", imageUrl)
+      setUploadedImage(imageUrl)
+      setUploadedFile(null)
+      setIsDepthGenerating(true)
+      const depthObjUrl = await generateDepthByUrl(imageUrl)
+      setDepthUrl(depthObjUrl)
+      setDepthVersion(v => v + 1)
+      setIsGenerated(true)
+    } catch (err) {
+      console.error(err)
+      alert("AI 生成或深度生成失败")
+    } finally {
       setIsGenerating(false)
-    }, 2000)
+      setIsDepthGenerating(false)
+    }
   }
 
   const handleGenerate3D = async () => {
     console.log("开始生成")
     console.log("当前上传文件：", uploadedFile, uploadedFile instanceof File)
 
-    if (!uploadedFile) {
-    alert("请先上传图片")
-    return
+    try {
+      setIsDepthGenerating(true)
+      // 本地文件路径：上传文件走 /depth
+      if (uploadedFile instanceof File) {
+        const result = await generateDepth(uploadedFile)
+        console.log("深度结果(本地文件)：", result)
+        setDepthUrl(result)
+        setDepthVersion(v => v + 1)
+        setIsGenerated(true)
+        return
+      }
+      // AI 图片路径：远程 URL 走 /depth/by-url
+      if (uploadedImage && /^https?:\/\//.test(uploadedImage)) {
+        const result = await generateDepthByUrl(uploadedImage)
+        console.log("深度结果(AI 图片 URL)：", result)
+        setDepthUrl(result)
+        setDepthVersion(v => v + 1)
+        setIsGenerated(true)
+        return
+      }
+      alert("请先上传图片或使用 AI 生成图片")
+    } catch (err) {
+      console.error(err)
+      alert("生成失败")
+    } finally {
+      setIsDepthGenerating(false)
+    }
   }
-
-  try {
-    setIsDepthGenerating(true)
-
-    const result = await generateDepth(uploadedFile)
-
-    console.log("深度结果：", result)
-
-    // TODO：这里后面接3D
-    setDepthUrl(result)
-    setDepthVersion(v => v + 1)
-    setIsGenerated(true)
-
-  } catch (err) {
-    console.error(err)
-    alert("生成失败")
-
-  } finally {
-    setIsDepthGenerating(false)
-  }
-}
 
   const handleExport = () => {
     // placeholder for export logic
