@@ -13,13 +13,14 @@ export function EmbossParameters({
         <span className="text-xs text-muted-foreground">高度</span>
         <input
           type="range"
-          min="1"
-          max="10"
+          min="0.01"
+          max="20"
+          step="0.01"
           value={height[0]}
           onChange={(e) => onHeightChange([Number(e.target.value)])}
           className="w-full"
         />
-        <span className="text-xs">{height[0]}mm</span>
+        <span className="text-xs">{height[0].toFixed(2)}mm</span>
       </div>
       <div>
         <span className="text-xs text-muted-foreground">大小</span>

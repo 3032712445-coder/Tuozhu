@@ -19,12 +19,12 @@ const RELIEF_Z_MAX = DEFAULT_PHONE_H / 2 - 0.5
 
 // 硬编码掩模位置参数（校准后的结果）
 const IPHONE16_MASK_CONFIG = {
-  scaleX: 1.2,
-  scaleY: 0.92,
+  scaleX: 1.40,
+  scaleY: 1.05,
   offsetX: 0.0,
   offsetY: 0.0,
-  translateX: 0.16,
-  translateY: -0.14,
+  translateX: 0.15,
+  translateY: -0.15,
   flipX: false,
   flipY: false,
   rotDeg: 0.0
