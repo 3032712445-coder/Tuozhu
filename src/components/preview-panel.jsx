@@ -16,6 +16,7 @@ export function PreviewPanel({
   embossSize,
   reliefRotation,
   depthMapUrl,
+  phoneModel,
 }) {
   return (
     <div className="relative flex h-full min-h-[400px] flex-col rounded-lg border border-border/60 bg-muted/30 p-4">
@@ -32,9 +33,9 @@ export function PreviewPanel({
       <div className="flex-1 min-h-[360px] rounded bg-muted/50 overflow-hidden relative">
         <ErrorBoundary>
           <Canvas
-            shadows
             camera={{ position: [0, 0, 15], fov: 50 }}
-            gl={{ antialias: true }}
+            gl={{ antialias: false, powerPreference: "high-performance" }}
+            dpr={[1, 1]}
             style={{ width: "100%", height: "100%", display: "block" }}
           >
             <Suspense
@@ -55,7 +56,7 @@ export function PreviewPanel({
                 embossHeight={embossHeight ?? [5]}
                 embossSize={embossSize ?? [60]}
                 reliefRotation={reliefRotation ?? 0}
-                
+                phoneModel={phoneModel}
               />
             </Suspense>
           </Canvas>

@@ -8,9 +8,7 @@ export function PhoneModelSelector({ value, onValueChange }) {
         className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
       >
         <option value="">请选择型号</option>
-        <option value="iphone15">iPhone 15</option>
-        <option value="iphone15pro">iPhone 15 Pro</option>
-        <option value="xiaomi14">小米 14</option>
+        <option value="iphone16">iPhone 16</option>
       </select>
     </div>
   )

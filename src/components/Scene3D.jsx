@@ -2,19 +2,33 @@ import { useRef, useMemo, useState, useCallback, useEffect } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import { OrbitControls } from "@react-three/drei"
 import * as THREE from "three"
+import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 console.log("🔥 Scene3D from components loaded")
 const { DoubleSide } = THREE
 
-const PHONE_W = 7
-const PHONE_H = 14
-const PHONE_T = 0.5
-const PLANE_Y = PHONE_T / 2
+const DEFAULT_PHONE_W = 7
+const DEFAULT_PHONE_H = 14
+const DEFAULT_PHONE_T = 0.5
+const DEFAULT_PLANE_Y = DEFAULT_PHONE_T / 2
 const RELIEF_OFFSET = 0.02
-const RELIEF_Y = PLANE_Y + RELIEF_OFFSET
-const RELIEF_X_MIN = -PHONE_W / 2 + 0.5
-const RELIEF_X_MAX = PHONE_W / 2 - 0.5
-const RELIEF_Z_MIN = -PHONE_H / 2 + 0.5
-const RELIEF_Z_MAX = PHONE_H / 2 - 0.5
+
+const RELIEF_X_MIN = -DEFAULT_PHONE_W / 2 + 0.5
+const RELIEF_X_MAX = DEFAULT_PHONE_W / 2 - 0.5
+const RELIEF_Z_MIN = -DEFAULT_PHONE_H / 2 + 0.5
+const RELIEF_Z_MAX = DEFAULT_PHONE_H / 2 - 0.5
+
+// 硬编码掩模位置参数（校准后的结果）
+const IPHONE16_MASK_CONFIG = {
+  scaleX: 1.2,
+  scaleY: 0.92,
+  offsetX: 0.0,
+  offsetY: 0.0,
+  translateX: 0.16,
+  translateY: -0.14,
+  flipX: false,
+  flipY: false,
+  rotDeg: 0.0
+}
 
 function clampRelief(pos) {
   return {
@@ -70,6 +84,88 @@ function SafeDisplacementMaterial({ displacementScale }) {
   )
 }
 
+const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack }) => {
+  shader.uniforms.uIsAdjustMode = { value: isAdjustMode ? 1.0 : 0.0 }
+  shader.uniforms.uCaseWidth = { value: caseWidth }
+  shader.uniforms.uCaseHeight = { value: caseHeight }
+  shader.uniforms.uPlaneY = { value: planeY }
+  shader.uniforms.uMaskLegalIsBlack = { value: maskLegalIsBlack ? 1.0 : 0.0 }
+  shader.uniforms.uMaskScale = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY) }
+  shader.uniforms.uMaskOffset = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY) }
+  shader.uniforms.uMaskTranslate = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY) }
+  shader.uniforms.uMaskFlip = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0) }
+  shader.uniforms.uMaskRotate = { value: IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0 }
+  if (maskTexture) {
+    shader.uniforms.uMask = { value: maskTexture }
+  }
+
+  shader.vertexShader = `
+    varying vec3 vLocalPosition;
+    varying vec3 vWorldPosition;
+  ` + shader.vertexShader.replace(
+    'void main() {',
+    `
+    void main() {
+      vLocalPosition = position;
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+    `
+  )
+
+  shader.fragmentShader = `
+    uniform float uIsAdjustMode;
+    uniform float uCaseWidth;
+    uniform float uCaseHeight;
+    uniform float uPlaneY;
+    uniform sampler2D uMask;
+    uniform float uMaskLegalIsBlack;
+    uniform vec2 uMaskScale;
+    uniform vec2 uMaskOffset;
+    uniform vec2 uMaskTranslate;
+    uniform vec2 uMaskFlip;
+    uniform float uMaskRotate;
+    varying vec3 vLocalPosition;
+    varying vec3 vWorldPosition;
+  ` + shader.fragmentShader.replace(
+    'vec4 diffuseColor = vec4( diffuse, opacity );',
+    `
+    vec2 wp = vec2(vWorldPosition.x, vWorldPosition.z) - uMaskTranslate;
+    bool outside = abs(wp.x) > (uCaseWidth * 0.5) || abs(wp.y) > (uCaseHeight * 0.5);
+    
+    // Perform rotation in world coordinates to avoid aspect ratio distortion
+    float c = cos(uMaskRotate);
+    float s = sin(uMaskRotate);
+    mat2 R = mat2(c, -s, s, c);
+    vec2 rotatedWp = R * wp;
+    
+    // Calculate UV based on rotated world position
+    vec2 uv = vec2(rotatedWp.x / (uCaseWidth * uMaskScale.x) + 0.5, rotatedWp.y / (uCaseHeight * uMaskScale.y) + 0.5);
+    
+    // Handle Flip
+    if (uMaskFlip.x > 0.5) uv.x = 1.0 - uv.x;
+    if (uMaskFlip.y > 0.5) uv.y = 1.0 - uv.y;
+    
+    // Add Offset
+    uv = uv - uMaskOffset;
+    
+    float maskv = 1.0;
+    ${maskTexture ? 'maskv = texture2D(uMask, uv).r;' : ''}
+    
+    bool underPlane = vWorldPosition.y < (uPlaneY + 1e-4);
+    bool hole = (uMaskLegalIsBlack > 0.5) ? (maskv > 0.5) : (maskv < 0.5);
+    
+    vec4 diffuseColor = vec4( diffuse, opacity );
+    if (outside || hole || underPlane) {
+      if (uIsAdjustMode > 0.5) {
+        diffuseColor = mix(diffuseColor, vec4(1.0, 0.0, 0.0, 0.5), 0.6);
+      } else {
+        discard;
+      }
+    }
+    `
+  )
+  return shader
+}
+
 function ReliefClippedMaterial({ 
   isGenerated, 
   displacementScale, 
@@ -77,7 +173,10 @@ function ReliefClippedMaterial({
   caseWidth, 
   caseHeight, 
   depthTexture,
-  depthMapUrl
+  depthMapUrl,
+  maskTexture,
+  planeY,
+  maskLegalIsBlack = false
  }) {
   const [texture, setTexture] = useState(null)
   const textureRef = useRef(null)
@@ -124,48 +223,11 @@ function ReliefClippedMaterial({
     const mat = matRef.current
     if (!mat) return
     mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uIsAdjustMode = { value: isAdjustMode ? 1.0 : 0.0 }
-      shader.uniforms.uCaseWidth = { value: caseWidth }
-      shader.uniforms.uCaseHeight = { value: caseHeight }
-      shader.vertexShader =
-        `
-        varying vec3 vLocalPosition;
-        varying vec3 vWorldPosition;
-        ` + shader.vertexShader.replace(
-          'void main() {',
-          `
-          void main() {
-            vLocalPosition = position;
-            vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-          `
-        )
-      shader.fragmentShader =
-        `
-        uniform float uIsAdjustMode;
-        uniform float uCaseWidth;
-        uniform float uCaseHeight;
-        varying vec3 vLocalPosition;
-        varying vec3 vWorldPosition;
-        ` + shader.fragmentShader
-          .replace(
-            'vec4 diffuseColor = vec4( diffuse, opacity );',
-            `
-            vec2 wp = vec2(vWorldPosition.x, vWorldPosition.z);
-            bool outside = abs(wp.x) > (uCaseWidth * 0.5) || abs(wp.y) > (uCaseHeight * 0.5);
-            vec4 diffuseColor = vec4( diffuse, opacity );
-            if (outside) {
-              if (uIsAdjustMode > 0.5) {
-                diffuseColor = mix(diffuseColor, vec4(1.0, 0.0, 0.0, 0.5), 0.6);
-              } else {
-                discard;
-              }
-            }
-            `
-          )
+      getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack })
       mat.userData.shader = shader
     }
     mat.needsUpdate = true
-  }, [isAdjustMode, caseWidth, caseHeight])
+  }, [isAdjustMode, caseWidth, caseHeight, maskTexture, planeY, maskLegalIsBlack])
 
   useFrame(() => {
     const mat = matRef.current
@@ -174,6 +236,19 @@ function ReliefClippedMaterial({
       shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0
       shader.uniforms.uCaseWidth.value = caseWidth
       shader.uniforms.uCaseHeight.value = caseHeight
+      if (shader.uniforms.uPlaneY) shader.uniforms.uPlaneY.value = planeY
+      if (shader.uniforms.uMaskLegalIsBlack) shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
+      
+      // 使用硬编码参数
+      if (shader.uniforms.uMaskScale) shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY)
+      if (shader.uniforms.uMaskOffset) shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY)
+      if (shader.uniforms.uMaskTranslate) shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY)
+      if (shader.uniforms.uMaskFlip) shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0)
+      if (shader.uniforms.uMaskRotate) shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0
+      
+      if (maskTexture && shader.uniforms.uMask) {
+        shader.uniforms.uMask.value = maskTexture
+      }
     }
   })
 
@@ -195,47 +270,6 @@ function ReliefClippedMaterial({
         alphaMap={texture}
         displacementScale={scaleValue}
         displacementBias={0}
-        onBeforeCompile={(shader) => {
-          shader.uniforms.uCaseWidth = { value: caseWidth }
-          shader.uniforms.uCaseHeight = { value: caseHeight }
-          shader.uniforms.uIsAdjustMode = { value: isAdjustMode ? 1.0 : 0.0 }
-          matRef.current.userData.shader = shader
-          shader.vertexShader =
-            `
-            varying vec3 vLocalPosition;
-            varying vec3 vWorldPosition;
-            ` + shader.vertexShader.replace(
-              'void main() {',
-              `
-              void main() {
-                vLocalPosition = position;
-                vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-              `
-            )
-          shader.fragmentShader =
-            `
-            uniform float uIsAdjustMode;
-            uniform float uCaseWidth;
-            uniform float uCaseHeight;
-            varying vec3 vLocalPosition;
-            varying vec3 vWorldPosition;
-            ` + shader.fragmentShader
-              .replace(
-                'vec4 diffuseColor = vec4( diffuse, opacity );',
-                `
-                vec2 wp = vec2(vWorldPosition.x, vWorldPosition.z);
-                bool outside = abs(wp.x) > (uCaseWidth * 0.5) || abs(wp.y) > (uCaseHeight * 0.5);
-                vec4 diffuseColor = vec4( diffuse, opacity );
-                if (outside) {
-                  if (uIsAdjustMode > 0.5) {
-                    diffuseColor = mix(diffuseColor, vec4(1.0, 0.0, 0.0, 0.5), 0.6);
-                  } else {
-                    discard;
-                  }
-                }
-                `
-              )
-        }}
       />
     )
   }
@@ -267,12 +301,17 @@ function ReliefPlane({
   reliefHeight,
   reliefRotation,
   depthMapUrl,
+  caseWidth,
+  caseHeight,
+  planeY,
+  maskTexture,
+  maskLegalIsBlack
 }) {
   const meshRef = useRef(null)
   const [planeDims, setPlaneDims] = useState({ w: 7, h: 7 })
   const [depthTex, setDepthTex] = useState(null)
   const geometry = useMemo(() => {
-    return new THREE.PlaneGeometry(planeDims.w, planeDims.h, 256, 256)
+    return new THREE.PlaneGeometry(planeDims.w, planeDims.h, 64, 64)
   }, [planeDims.w, planeDims.h])
 
   const sizeVal = Array.isArray(reliefSize) ? reliefSize[0] : reliefSize
@@ -336,8 +375,8 @@ function ReliefPlane({
       ref={meshRef}
       geometry={geometry}
       visible={isGenerated}
-      position={[reliefPosition.x, RELIEF_Y, reliefPosition.y]}
-      scale={[scale, scale,1]}
+      position={[reliefPosition.x, planeY + RELIEF_OFFSET, reliefPosition.y]}
+      scale={[scale, scale, 1]}
       castShadow
       receiveShadow
     >
@@ -345,17 +384,22 @@ function ReliefPlane({
         isGenerated={isGenerated}
         displacementScale={reliefHeight}
         isAdjustMode={isAdjustMode}
-        caseWidth={PHONE_W}
-        caseHeight={PHONE_H}
+        caseWidth={caseWidth}
+        caseHeight={caseHeight}
         depthTexture={depthTex}
         depthMapUrl={depthMapUrl}
+        maskTexture={maskTexture}
+        maskLegalIsBlack={maskLegalIsBlack}
+        planeY={planeY}
       />
     </mesh>
   )
 }
 
-function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChange }) {
+function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChange, planeY }) {
   const dragOffsetRef = useRef(null)
+  const rafRef = useRef(null)
+  const lastPointRef = useRef(null)
   const onPointerDown = useCallback(
     (e) => {
       if (!isAdjustMode) return
@@ -370,9 +414,15 @@ function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChan
   const onPointerMove = useCallback(
     (e) => {
       if (!isAdjustMode || !dragOffsetRef.current) return
-      const p = e.point
-      const newPos = { x: p.x - dragOffsetRef.current.dx, y: p.z - dragOffsetRef.current.dz }
-      onReliefPositionChange(newPos)
+      lastPointRef.current = e.point.clone()
+      if (rafRef.current) return
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        const p = lastPointRef.current
+        if (!p) return
+        const newPos = { x: p.x - dragOffsetRef.current.dx, y: p.z - dragOffsetRef.current.dz }
+        onReliefPositionChange(newPos)
+      })
     },
     [isAdjustMode, onReliefPositionChange]
   )
@@ -380,6 +430,10 @@ function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChan
     if (!isAdjustMode) return
     e.target.releasePointerCapture(e.pointerId)
     dragOffsetRef.current = null
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
     document.body.style.cursor = "auto"
   }, [isAdjustMode])
   const onPointerOver = useCallback(() => {
@@ -391,7 +445,7 @@ function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChan
   }, [])
   return (
     <mesh
-      position={[0, RELIEF_Y, 0]}
+      position={[0, planeY, 0]}
       rotation={[-Math.PI / 2, 0, 0]}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -441,23 +495,142 @@ function CameraController({ isAdjustMode, controlsRef }) {
   return null
 }
 
-function PhoneCaseBox({ isAdjustMode }) {
-  const boxRef = useRef(null)
-  const originalRaycastRef = useRef(null)
+function loadMaskTexture(model) {
+  const tryLoad = (path) =>
+    new Promise((resolve) => {
+      const loader = new THREE.TextureLoader()
+      loader.load(
+        path,
+        (tex) => {
+          tex.flipY = false
+          tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
+          tex.minFilter = THREE.LinearFilter
+          tex.magFilter = THREE.LinearFilter
+          resolve(tex)
+        },
+        undefined,
+        () => resolve(null)
+      )
+    })
+  return (async () => {
+    // 优先使用 <model>.png（黑色=合法，白色=孔洞）
+    let tex = await tryLoad(`/phonecase/${model}.png`)
+    if (tex) return { tex, legalIsBlack: true }
+    // 其次尝试 <model>_mask.png（白色=合法，黑色=孔洞）的旧约定
+    tex = await tryLoad(`/phonecase/${model}_mask.png`)
+    if (tex) return { tex, legalIsBlack: false }
+    return { tex: null, legalIsBlack: false }
+  })()
+}
+
+function generateMaskTextureAsync(mesh, width, height, sizeX, sizeZ, onDone) {
+  const canvas = document.createElement("canvas")
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
+  const imgData = ctx.createImageData(width, height)
+  const rc = new THREE.Raycaster()
+  const origin = new THREE.Vector3()
+  const dir = new THREE.Vector3(0, -1, 0)
+  const epsilon = 0.02
+  let j = 0
+  const stepRows = 8
+  function processBatch() {
+    const end = Math.min(j + stepRows, height)
+    for (; j < end; j++) {
+      for (let i = 0; i < width; i++) {
+        const u = i / (width - 1)
+        const v = j / (height - 1)
+        const x = (u - 0.5) * sizeX
+        const z = (v - 0.5) * sizeZ
+        origin.set(x, 1.0, z)
+        rc.set(origin, dir)
+        const hits = rc.intersectObject(mesh, true)
+        let ok = false
+        if (hits && hits.length > 0) {
+          const h = hits[0]
+          if (Math.abs(h.point.y - 0.0) <= epsilon) ok = true
+        }
+        const idx = (j * width + i) * 4
+        const val = ok ? 255 : 0
+        imgData.data[idx] = val
+        imgData.data[idx + 1] = val
+        imgData.data[idx + 2] = val
+        imgData.data[idx + 3] = 255
+      }
+    }
+    if (j < height) {
+      setTimeout(processBatch, 0)
+    } else {
+      ctx.putImageData(imgData, 0, 0)
+      const tex = new THREE.CanvasTexture(canvas)
+      tex.flipY = false
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
+      tex.minFilter = THREE.LinearFilter
+      tex.magFilter = THREE.LinearFilter
+      tex.needsUpdate = true
+      onDone(tex)
+    }
+  }
+  setTimeout(processBatch, 0)
+}
+
+function PhoneCaseSTL({ isAdjustMode, onReady, model = "iphone16" }) {
+  const meshRef = useRef(null)
+  const [geom, setGeom] = useState(null)
   useEffect(() => {
-    if (!boxRef.current) return
-    const mesh = boxRef.current
-    if (!originalRaycastRef.current) originalRaycastRef.current = mesh.raycast.bind(mesh)
+    const loader = new STLLoader()
+    const path = `/phonecase/${model}.stl`
+    loader.load(path, async (geometry) => {
+      let g = geometry.clone()
+      g.rotateX(Math.PI / 2)
+      g.computeBoundingBox()
+      const size0 = new THREE.Vector3()
+      g.boundingBox.getSize(size0)
+      const targetW = DEFAULT_PHONE_W
+      const targetH = DEFAULT_PHONE_H
+      const scaleFactor = Math.min(targetW / (size0.x || 1), targetH / (size0.z || 1))
+      g.scale(scaleFactor, scaleFactor, scaleFactor)
+      g.computeBoundingBox()
+      const bb = g.boundingBox
+      const center = new THREE.Vector3()
+      bb.getCenter(center)
+      const topY = bb.max.y
+      g.translate(-center.x, -topY, -center.z)
+      g.computeBoundingBox()
+      const size = new THREE.Vector3()
+      g.boundingBox.getSize(size)
+      const caseWidth = size.x
+      const caseHeight = size.z
+      setGeom(g)
+      const { tex: maskTex, legalIsBlack } = await loadMaskTexture(model)
+      onReady({ caseWidth, caseHeight, planeY: 0.0, maskTexture: maskTex, maskLegalIsBlack: legalIsBlack })
+      if (!maskTex) {
+        const tempMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial())
+        generateMaskTextureAsync(tempMesh, 96, 96, caseWidth, caseHeight, (tex) => {
+          onReady({ caseWidth, caseHeight, planeY: 0.0, maskTexture: tex, maskLegalIsBlack: false })
+        })
+      }
+    })
+  }, [onReady, model])
+  useEffect(() => {
+    if (!meshRef.current) return
+    const mesh = meshRef.current
+    const orig = mesh.raycast?.bind(mesh)
     if (isAdjustMode) {
       mesh.raycast = () => {}
-    } else {
-      mesh.raycast = originalRaycastRef.current
+    } else if (orig) {
+      mesh.raycast = orig
     }
   }, [isAdjustMode])
+  if (!geom) return null
   return (
-    <mesh ref={boxRef} position={[0, 0, 0]} receiveShadow>
-      <boxGeometry args={[PHONE_W, PHONE_T, PHONE_H]} />
-      <meshStandardMaterial color="#2a2a2a" />
+    <mesh ref={meshRef} geometry={geom} position={[0, 0, 0]} receiveShadow={false} castShadow={false}>
+      {isAdjustMode ? (
+        <meshBasicMaterial color="#2a2a2a" />
+      ) : (
+        <meshStandardMaterial color="#2a2a2a" roughness={0.9} metalness={0.0} flatShading />
+      )}
     </mesh>
   )
 }
@@ -472,27 +645,39 @@ export function Scene3D({
   embossSize,
   reliefRotation,
   depthMapUrl,
+  phoneModel,
 }) {
   const controlsRef = useRef(null)
+  const [caseWidth, setCaseWidth] = useState(DEFAULT_PHONE_W)
+  const [caseHeight, setCaseHeight] = useState(DEFAULT_PHONE_H)
+  const [planeY, setPlaneY] = useState(DEFAULT_PLANE_Y)
+  const [maskTexture, setMaskTexture] = useState(null)
+  const [maskLegalIsBlack, setMaskLegalIsBlack] = useState(false)
 
   return (
     <>
-      <ambientLight intensity={0.5} />
+      <ambientLight intensity={0.8} />
       <directionalLight
         position={[5, 10, 5]}
-        intensity={2}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-near={1}
-        shadow-camera-far={60}
-        shadow-camera-left={-20}
-        shadow-camera-right={20}
-        shadow-camera-top={20}
-        shadow-camera-bottom={-20}
+        intensity={0.8}
       />
 
       <group>
-        <PhoneCaseBox isAdjustMode={isAdjustMode} />
+        {phoneModel === "iphone16" && (
+          <PhoneCaseSTL
+            isAdjustMode={isAdjustMode}
+            model={phoneModel}
+            onReady={({ caseWidth, caseHeight, planeY, maskTexture, maskLegalIsBlack }) => {
+              setCaseWidth(caseWidth)
+              setCaseHeight(caseHeight)
+              setPlaneY(planeY)
+              setMaskTexture(maskTexture)
+              if (typeof maskLegalIsBlack === "boolean") {
+                setMaskLegalIsBlack(maskLegalIsBlack)
+              }
+            }}
+          />
+        )}
         <ReliefPlane
           depthVersion={depthVersion}
           isGenerated={isGenerated}
@@ -502,12 +687,18 @@ export function Scene3D({
           reliefHeight={embossHeight}
           reliefRotation={reliefRotation}
           depthMapUrl={depthMapUrl}
+          caseWidth={caseWidth}
+          caseHeight={caseHeight}
+          planeY={planeY}
+          maskTexture={maskTexture}
+          maskLegalIsBlack={maskLegalIsBlack}
         />
         {(isAdjustMode && isGenerated) && (
           <AdjustCapturePlane
             isAdjustMode={isAdjustMode}
             reliefPosition={reliefPosition}
             onReliefPositionChange={onReliefPositionChange}
+            planeY={planeY}
           />
         )}
       </group>

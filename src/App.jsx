@@ -106,6 +106,16 @@ export default function App() {
 
     try {
       setIsDepthGenerating(true)
+      
+      // 默认路径：没有图片时使用 test-depth.jpg
+      if (!uploadedFile && !uploadedImage) {
+        setDepthUrl("/test-depth.jpg")
+        setDepthVersion(v => v + 1)
+        setIsGenerated(true)
+        alert("未选择图片，已为您生成默认浮雕")
+        return
+      }
+
       // 本地文件路径：上传文件走 /depth
       if (uploadedFile instanceof File) {
         const result = await generateDepth(uploadedFile)
@@ -124,7 +134,6 @@ export default function App() {
         setIsGenerated(true)
         return
       }
-      alert("请先上传图片或使用 AI 生成图片")
     } catch (err) {
       console.error(err)
       alert("生成失败")
@@ -237,6 +246,7 @@ export default function App() {
             embossHeight={embossHeight}
             embossSize={embossSize}
             reliefRotation={reliefRotation}
+            phoneModel={phoneModel}
           />
         </section>
       </main>
