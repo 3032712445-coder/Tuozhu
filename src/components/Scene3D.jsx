@@ -37,7 +37,7 @@ function clampRelief(pos) {
   }
 }
 
-const DEFAULT_DEPTH_MAP_URL = "http://localhost:8000/depth/latest"
+const DEFAULT_DEPTH_MAP_URL = "http://localhost:8001/depth/latest"
 
 function SafeDisplacementMaterial({ displacementScale }) {
   const [texture, setTexture] = useState(null)
@@ -172,62 +172,34 @@ function ReliefClippedMaterial({
   isAdjustMode, 
   caseWidth, 
   caseHeight, 
-  depthTexture,
-  depthMapUrl,
-  maskTexture,
-  planeY,
+  depthTexture, 
+  maskTexture, 
+  planeY, 
   maskLegalIsBlack = false
  }) {
-  const [texture, setTexture] = useState(null)
-  const textureRef = useRef(null)
   const matRef = useRef(null)
+  // 确保 scale 是数值且足够大
   const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
   const scaleValue = (scale / 10) * 5
 
   useEffect(() => {
-  if (depthTexture) {
-    textureRef.current = depthTexture
-    setTexture(depthTexture)
-    return
-  }
-
-  if (!depthMapUrl) return
-
-  const loader = new THREE.TextureLoader()
-
-  loader.load(
-    depthMapUrl + "?t=" + Date.now(),
-    (tex) => {
-      tex.colorSpace = THREE.NoColorSpace
-      tex.minFilter = THREE.LinearFilter
-      tex.magFilter = THREE.LinearFilter
-      tex.generateMipmaps = false
-      tex.needsUpdate = true
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-      textureRef.current = tex
-      setTexture(tex)
-    },
-    undefined,
-    () => setTexture(null)
-  )
-
-  return () => {
-    if (textureRef.current) {
-      textureRef.current.dispose()
-      textureRef.current = null
-    }
-  }
-}, [depthTexture, depthMapUrl])
-
-  useEffect(() => {
     const mat = matRef.current
     if (!mat) return
+    
+    // 如果没有深度纹理，或者处于非生成模式，使用默认材质
+    if (!isGenerated || !depthTexture) {
+        if (mat.userData.shader) {
+            // 重置 shader 逻辑可能比较复杂，简单起见，我们在下面通过 isGenerated 控制渲染
+        }
+        return
+    }
+
     mat.onBeforeCompile = (shader) => {
       getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack })
       mat.userData.shader = shader
     }
     mat.needsUpdate = true
-  }, [isAdjustMode, caseWidth, caseHeight, maskTexture, planeY, maskLegalIsBlack])
+  }, [isAdjustMode, caseWidth, caseHeight, maskTexture, planeY, maskLegalIsBlack, isGenerated, depthTexture])
 
   useFrame(() => {
     const mat = matRef.current
@@ -261,19 +233,22 @@ function ReliefClippedMaterial({
     transparent: true,
     alphaTest: 0.05,
   }
-  if (isGenerated) {
-    if (!texture) return <meshStandardMaterial {...commonProps} />
+  
+  if (isGenerated && depthTexture) {
+    // 调试日志：确认深度纹理是否有效
+    // console.log("Rendering ReliefClippedMaterial with depthTexture", depthTexture.id)
     return (
       <meshStandardMaterial
         {...commonProps}
-        displacementMap={texture}
-        alphaMap={texture}
+        map={depthTexture} // 显式绑定颜色贴图，这样即使置换不明显，也能看到图片
+        displacementMap={depthTexture}
+        alphaMap={depthTexture} 
         displacementScale={scaleValue}
         displacementBias={0}
       />
     )
   }
-  return <meshStandardMaterial {...commonProps} alphaMap={texture ?? undefined} />
+  return <meshStandardMaterial {...commonProps} />
 }
 
 /**
@@ -292,6 +267,53 @@ function pointerToPlaneIntersection(clientX, clientY, camera, gl, plane, target)
  * 浮雕平面：position 始终来自 reliefPosition；
  * 调整模式下在 mesh 上绑定指针事件实现二维拖拽，并仅在浮雕上设置 grab/grabbing 光标。
  */
+function EraserCapturePlane({ 
+  isEraserMode, 
+  reliefPosition, 
+  planeY, 
+  onEraserDraw, 
+  scale 
+}) {
+  const meshRef = useRef(null)
+  
+  if (!isEraserMode) return null
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.05, reliefPosition.y]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      scale={[scale, scale, 1]}
+      visible={false}
+    >
+      <planeGeometry args={[7, 7]} /> 
+      <meshBasicMaterial visible={false} />
+      
+      <mesh
+        onPointerDown={(e) => {
+            e.stopPropagation()
+            e.target.setPointerCapture(e.pointerId)
+            onEraserDraw(e.uv, "start")
+        }}
+        onPointerMove={(e) => {
+            if (e.buttons === 1) {
+                e.stopPropagation()
+                onEraserDraw(e.uv, "move")
+            }
+        }}
+        onPointerUp={(e) => {
+            e.stopPropagation()
+            e.target.releasePointerCapture(e.pointerId)
+            onEraserDraw(e.uv, "end")
+        }}
+      >
+         <planeGeometry args={[7, 7]} />
+         <meshBasicMaterial transparent opacity={0.0} depthWrite={false} color="red" />
+      </mesh>
+    </mesh>
+  )
+}
+
 function ReliefPlane({
   depthVersion,
   isGenerated,
@@ -305,29 +327,74 @@ function ReliefPlane({
   caseHeight,
   planeY,
   maskTexture,
-  maskLegalIsBlack
+  maskLegalIsBlack,
+  isEraserMode,
+  onEraserDraw
 }) {
   const meshRef = useRef(null)
   const [planeDims, setPlaneDims] = useState({ w: 7, h: 7 })
+
+  const SEGMENTS_W = 512
+  const SEGMENTS_H = 512
+
   const [depthTex, setDepthTex] = useState(null)
+  const [isDrawing, setIsDrawing] = useState(false)
+  
+  const eraserCanvasRef = useRef(null)
+  const eraserContextRef = useRef(null)
+  const eraserTextureRef = useRef(null)
+
   const geometry = useMemo(() => {
-    return new THREE.PlaneGeometry(planeDims.w, planeDims.h, 64, 64)
+    return new THREE.PlaneGeometry(planeDims.w, planeDims.h, SEGMENTS_W, SEGMENTS_H)
   }, [planeDims.w, planeDims.h])
 
   const sizeVal = Array.isArray(reliefSize) ? reliefSize[0] : reliefSize
   const scale = 0.3 + ((sizeVal - 20) / 180) * 2.2
+  
   useEffect(() => {
+    let isMounted = true
     const loader = new THREE.TextureLoader()
     const url = depthMapUrl || DEFAULT_DEPTH_MAP_URL
+    
+    const isBlob = url.startsWith("blob:")
+    const timestampedUrl = isBlob ? url : (url + (url.includes('?') ? '&' : '?') + "t=" + Date.now())
+    
+    console.log("Loading depth texture from:", timestampedUrl)
+
     loader.load(
-      url + "?t=" + Date.now(),
+      timestampedUrl,
       (tex) => {
-        tex.colorSpace = THREE.NoColorSpace   // ⭐关键
+        if (!isMounted) {
+          tex.dispose()
+          return
+        }
+        console.log("Depth texture loaded successfully", tex.image.width, tex.image.height)
+        
+        const img = tex.image
+        const canvas = document.createElement("canvas")
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext("2d")
+        ctx.drawImage(img, 0, 0)
+        
+        eraserCanvasRef.current = canvas
+        eraserContextRef.current = ctx
+        
+        const canvasTex = new THREE.CanvasTexture(canvas)
+        canvasTex.colorSpace = THREE.NoColorSpace
+        canvasTex.minFilter = THREE.LinearFilter
+        canvasTex.magFilter = THREE.LinearFilter
+        canvasTex.generateMipmaps = false
+        canvasTex.wrapS = canvasTex.wrapT = THREE.RepeatWrapping
+        
+        eraserTextureRef.current = canvasTex
+        
+        tex.colorSpace = THREE.NoColorSpace
         tex.minFilter = THREE.LinearFilter
         tex.magFilter = THREE.LinearFilter
         tex.generateMipmaps = false
         tex.needsUpdate = true
-        const img = tex.image
+        
         if (img && img.width && img.height) {
           const aspect = img.width / img.height
           const baseH = 7
@@ -335,30 +402,82 @@ function ReliefPlane({
         } else {
           setPlaneDims({ w: 7, h: 7 })
         }
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-        setDepthTex(tex)
+        
+        setDepthTex(prev => {
+          if (prev) prev.dispose()
+          return canvasTex
+        })
       },
       undefined,
-      () => {
-        setPlaneDims({ w: 7, h: 7 })
-        setDepthTex(null)
+      (err) => {
+        console.error("Failed to load depth texture:", err)
+        if (isMounted) {
+          setPlaneDims({ w: 7, h: 7 })
+          setDepthTex(prev => {
+            if (prev) prev.dispose()
+            return null
+          })
+        }
       }
     )
     return () => {
-      // keep texture for material reuse; do not dispose here to avoid double free
+      isMounted = false
     }
   }, [depthMapUrl, depthVersion])
+
+  useEffect(() => {
+    if (onEraserDraw) {
+        // Parent callback if needed
+    }
+  }, [onEraserDraw])
+
+  const drawEraser = (uv) => {
+    const canvas = eraserCanvasRef.current
+    const ctx = eraserContextRef.current
+    const tex = eraserTextureRef.current
+    
+    if (!canvas || !ctx || !tex) return
+
+    const x = uv.x * canvas.width
+    const y = (1.0 - uv.y) * canvas.height
+    
+    const radius = Math.max(20, canvas.width * 0.05) 
+
+    ctx.globalCompositeOperation = "source-over"
+    ctx.fillStyle = "black" 
+    
+    ctx.beginPath()
+    ctx.arc(x, y, radius, 0, Math.PI * 2)
+    ctx.fill()
+    
+    tex.needsUpdate = true
+  }
+
+  const onEraserInteraction = (uv, type) => {
+      if (type === "move" || type === "start") {
+          drawEraser(uv)
+      }
+  }
+  
+  useEffect(() => {
+      if (eraserCanvasRef.current) {
+          window.__eraserCanvas = eraserCanvasRef.current
+      }
+  }, [depthTex])
+
   const rotTargetRef = useRef(0)
   useEffect(() => {
     rotTargetRef.current = (reliefRotation * Math.PI) / 180
   }, [reliefRotation])
+
   useFrame(() => {
     if (!meshRef.current) return
     const m = meshRef.current
     m.rotation.x = -Math.PI / 2
     m.rotation.y = 0
-    m.rotation.z = rotTargetRef.current
+    m.rotation.z = THREE.MathUtils.lerp(m.rotation.z, -rotTargetRef.current, 0.1)
   })
+
   useEffect(() => {
     if (!meshRef.current) return
     const mesh = meshRef.current
@@ -371,28 +490,38 @@ function ReliefPlane({
   }, [isAdjustMode])
 
   return (
-    <mesh
-      ref={meshRef}
-      geometry={geometry}
-      visible={isGenerated}
-      position={[reliefPosition.x, planeY + RELIEF_OFFSET, reliefPosition.y]}
-      scale={[scale, scale, 1]}
-      castShadow
-      receiveShadow
-    >
-      <ReliefClippedMaterial
-        isGenerated={isGenerated}
-        displacementScale={reliefHeight}
-        isAdjustMode={isAdjustMode}
-        caseWidth={caseWidth}
-        caseHeight={caseHeight}
-        depthTexture={depthTex}
-        depthMapUrl={depthMapUrl}
-        maskTexture={maskTexture}
-        maskLegalIsBlack={maskLegalIsBlack}
+    <>
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        visible={isGenerated}
+        position={[reliefPosition.x, planeY + RELIEF_OFFSET, reliefPosition.y]}
+        scale={[scale, scale, 1]}
+        castShadow
+        receiveShadow
+      >
+        <ReliefClippedMaterial
+          isGenerated={isGenerated}
+          displacementScale={reliefHeight}
+          isAdjustMode={isAdjustMode}
+          caseWidth={caseWidth}
+          caseHeight={caseHeight}
+          depthTexture={depthTex}
+          depthMapUrl={depthMapUrl}
+          maskTexture={maskTexture}
+          maskLegalIsBlack={maskLegalIsBlack}
+          planeY={planeY}
+        />
+      </mesh>
+      
+      <EraserCapturePlane 
+        isEraserMode={isEraserMode}
+        reliefPosition={reliefPosition}
         planeY={planeY}
+        scale={scale}
+        onEraserDraw={onEraserInteraction}
       />
-    </mesh>
+    </>
   )
 }
 
@@ -644,8 +773,10 @@ export function Scene3D({
   embossHeight,
   embossSize,
   reliefRotation,
-  depthMapUrl,
+  depthUrl: depthMapUrl,
   phoneModel,
+  isEraserMode,
+  onEraserDraw,
 }) {
   const controlsRef = useRef(null)
   const [caseWidth, setCaseWidth] = useState(DEFAULT_PHONE_W)
@@ -692,8 +823,10 @@ export function Scene3D({
           planeY={planeY}
           maskTexture={maskTexture}
           maskLegalIsBlack={maskLegalIsBlack}
+          isEraserMode={isEraserMode}
+          onEraserDraw={onEraserDraw}
         />
-        {(isAdjustMode && isGenerated) && (
+        {(isAdjustMode && isGenerated && !isEraserMode) && (
           <AdjustCapturePlane
             isAdjustMode={isAdjustMode}
             reliefPosition={reliefPosition}
@@ -705,7 +838,7 @@ export function Scene3D({
 
       <OrbitControls
         ref={controlsRef}
-        enabled={!isAdjustMode}
+        enabled={!isAdjustMode && !isEraserMode}
         enableDamping
         dampingFactor={0.05}
         minDistance={5}

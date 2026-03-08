@@ -259,8 +259,9 @@ async function buildCombinedMesh({
 
   // 使用高细分平面作为浮雕
   // 细分度取决于浮雕尺寸，确保精度
-  const segW = Math.floor(200 * reliefScale)
-  const segH = Math.floor(200 * reliefScale * depthAspect)
+  // 提升到 800 以获得超高精度（接近 100万个面），适合精细打印
+  const segW = Math.floor(800 * reliefScale)
+  const segH = Math.floor(800 * reliefScale * depthAspect)
   const reliefGeo = new THREE.PlaneGeometry(reliefWidthInScene, reliefHeightInScene, segW, segH)
   
   // 4. 应用置换与裁剪
@@ -500,6 +501,72 @@ function triggerStlDownload(stlText, phoneModel) {
   URL.revokeObjectURL(objectUrl)
 }
 
+async function generateDepth(file) {
+  if (!(file instanceof File)) {
+    console.error("不是文件:", file)
+    throw new Error("上传对象不是文件")
+  }
+
+  const formData = new FormData()
+  formData.append("file", file)
+
+  console.log("正在发送深度图生成请求...", file.name)
+  const res = await fetch("http://127.0.0.1:8001/depth", {
+    method: "POST",
+    body: formData
+  })
+  console.log("深度图请求已发送，状态码:", res.status)
+
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("后端错误:", t)
+    throw new Error("生成失败")
+  }
+
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}
+
+async function generateImage(prompt) {
+  console.log("正在发送 AI 生图请求...", prompt)
+  const res = await fetch("http://127.0.0.1:8000/generate-image", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ prompt }),
+  })
+  console.log("AI 生图请求已发送，状态码:", res.status)
+  
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("智谱后端错误:", t)
+    throw new Error(`AI 生成失败: ${t}`)
+  }
+  const data = await res.json()
+  return data.image_url
+}
+
+async function generateDepthByUrl(imageUrl) {
+  console.log("正在发送 URL 深度图生成请求...", imageUrl)
+  const res = await fetch("http://127.0.0.1:8001/depth/by-url", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ image_url: imageUrl }),
+  })
+  console.log("URL 深度图请求已发送，状态码:", res.status)
+
+  if (!res.ok) {
+    const t = await res.text()
+    console.log("深度服务错误:", t)
+    throw new Error(`深度生成失败: ${t}`)
+  }
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}
+
 export default function App() {
   const [phoneModel, setPhoneModel] = useState("")
   const [uploadedImage, setUploadedImage] = useState(null)
@@ -531,7 +598,7 @@ export default function App() {
       setIsGenerated(true)
     } catch (err) {
       console.error(err)
-      alert("AI 生成或深度生成失败")
+      alert(`AI 生成或深度生成失败: ${err.message}`)
     } finally {
       setIsGenerating(false)
       setIsDepthGenerating(false)
@@ -578,7 +645,23 @@ export default function App() {
     }
     const currentModel = phoneModel || "iphone16" // 默认回退到 iphone16
     try {
-      const { pixels, width, height } = await loadDepthImageData(depthUrl)
+      let pixels, width, height
+
+      // Check if there is a modified canvas from eraser tool
+      if (window.__eraserCanvas) {
+        console.log("Using modified depth map from eraser canvas")
+        const canvas = window.__eraserCanvas
+        width = canvas.width
+        height = canvas.height
+        const ctx = canvas.getContext("2d")
+        pixels = ctx.getImageData(0, 0, width, height).data
+      } else {
+        const data = await loadDepthImageData(depthUrl)
+        pixels = data.pixels
+        width = data.width
+        height = data.height
+      }
+
       const embossedMesh = await buildCombinedMesh({
         phoneModel: currentModel,
         embossHeight,
@@ -590,7 +673,7 @@ export default function App() {
         depthHeight: height,
       })
       const exporter = new STLExporter()
-      const stlText = exporter.parse(embossedMesh)
+      const stlText = exporter.parse(embossedMesh, { binary: true })
       triggerStlDownload(stlText, currentModel)
       embossedMesh.geometry.dispose()
       embossedMesh.material.dispose()

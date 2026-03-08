@@ -23,9 +23,13 @@
 
 ## 网站使用说明
 
-1. 手机型号选择、图片上传、AI 图片生成、模型导出等功能暂未实现。
-2. 点击“生成浮雕”后，会从 public 文件夹中读取 test-depth.jpg 作为深度图，生成浮雕并显示在右侧预览区；手机壳目前用黑色长方体代替。
-3. 左侧面板可调整浮雕的高度、大小、旋转角度。右侧视图用鼠标拖动可改变观察角度；点击右上角“调整位置”会强制进入俯视状态，此时拖动鼠标可以移动浮雕。浮雕可移动到手机壳外，外部部分在调整状态下显示为红色；在非调整状态下越界部分不可见。点击“完成调整”返回。
+1. 操作流程：选择手机型号-》上传图片或AI生成-》生成浮雕-》调整参数-》导出stl文件
+2. 注意事项
+   - 手机型号选择目前仅支持 iPhone 16，后续会添加其他型号。
+   - 若未上传图片或 AI 生成图片，默认使用 public 文件夹中的 test-depth.jpg。
+   -最好按照操作流程来，不然我也不知道会有什么bug。
+3. 左侧面板可调整浮雕的高度、大小、旋转角度。右侧视图用鼠标拖动可改变观察角度；点击右上角“调整位置”会强制进入俯视状态，此时拖动鼠标可以移动浮雕。浮雕可移动到手机壳外，外部部分在调整状态下显示为红色；在非调整状态下越界部分不可见。在调整状态下可以选择擦除删掉不需要的浮雕，但目前功能不太稳定，建议先别用，等后续优化。点击“完成调整”返回。
+4. 本地在生成深度图时会把图片先放入backend/uploads文件夹，然后再生成深度图，生成的深度图可以在backend/outputs文件夹中找到。
 
 ## 项目文件说明
 
@@ -79,11 +83,9 @@
   按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型并放到checkpoints文件夹
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
      
- 3.启动服务
+ 3.启动后端服务（8001 for 深度图生成，8000 for 智谱AI生图）
   python -m uvicorn backend.depth_service.api:app --host 0.0.0.0 --port 8001 --reload
-
-## 常用脚本
-’python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload‘：启动智谱服务
+  python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - `npm install`：安装依赖。
 - `npm run dev`：启动开发服务器进行本地预览。
 - `npm run build`：打包生成静态文件（dist）。
