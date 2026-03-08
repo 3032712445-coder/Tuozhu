@@ -65,7 +65,7 @@
       │ ├─ api.py/
       │ └─ outputs/ # 生成的深度图保存
 
-## Pixel-perfect-depth说明
+## 后端服务说明
 
  一、后端 FastAPI 服务（Depth 生成）
 
@@ -83,14 +83,10 @@
 
  3.下载仓库为https://github.com/gangweix/pixel-perfect-depth，
   在他们的Readme里找到：![alt text](image.png)
-  按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型并放到checkpoints文件夹
+  按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型权重并放到checkpoints文件夹
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
      
-<<<<<<< HEAD
  3.启动后端服务（8001 for 深度图生成，8000 for 智谱AI生图）
-=======
- 4.启动服务
->>>>>>> b430ba8227453e3ae2c3a15e41577c97d469a2fd
   python -m uvicorn backend.depth_service.api:app --host 0.0.0.0 --port 8001 --reload
   python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - `npm install`：安装依赖。
