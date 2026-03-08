@@ -87,8 +87,8 @@
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
      
  3.启动后端服务（8001 for 深度图生成，8000 for 智谱AI生图）
-  python -m uvicorn backend.depth_service.api:app --host 0.0.0.0 --port 8001 --reload
-  python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.depth_service.api:app --port 8001 --reload
+uvicorn main:app --port 8000 --reload
 - `npm install`：安装依赖。
 - `npm run dev`：启动开发服务器进行本地预览。
 - `npm run build`：打包生成静态文件（dist）。
