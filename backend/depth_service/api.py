@@ -60,17 +60,16 @@ print("🔥 正在加载 PixelPerfectDepth 模型...")
 
 set_seed(666)
 
-DEVICE = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps"
-    if torch.backends.mps.is_available()
-    else "cpu"
-)
-
-# 强制切换为 CPU 模式加载，防止 GPU 显存不足卡死
-# 如果你有强力 GPU，可以注释掉这行
-#DEVICE = torch.device("cpu") 
+# 检测设备
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+    print("✅ 检测到 GPU，使用 CUDA 运行模型")
+elif torch.backends.mps.is_available():
+    DEVICE = torch.device("mps")
+    print("✅ 检测到 MPS，使用 Apple Silicon GPU 运行模型")
+else:
+    DEVICE = torch.device("cpu")
+    print("⚠️ 未检测到 GPU，使用 CPU 运行模型") 
 
 semantics_pth = os.path.join(BASE_DIR, "pixel-perfect-depth/checkpoints/depth_anything_v2_vitl.pth")
 model_pth = os.path.join(BASE_DIR, "pixel-perfect-depth/checkpoints/ppd.pth")
