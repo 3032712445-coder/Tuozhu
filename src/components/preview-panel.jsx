@@ -74,12 +74,27 @@ export function PreviewPanel({
               按住鼠标左键擦除浮雕
             </div>
           )}
-          <Canvas
-            camera={{ position: [0, 0, 15], fov: 50 }}
-            gl={{ antialias: false, powerPreference: "high-performance" }}
-            dpr={[1, 1]}
-            style={{ width: "100%", height: "100%", display: "block" }}
-          >
+          <div className="h-full w-full">
+            {typeof window !== 'undefined' && window.WebGLRenderingContext ? (
+              <Canvas
+                camera={{ position: [0, 0, 15], fov: 50 }}
+                gl={{
+                  powerPreference: "default",
+                  alpha: false,
+                  depth: true,
+                  stencil: false,
+                  antialias: false,
+                  preserveDrawingBuffer: false
+                }}
+                dpr={1}
+                style={{ width: "100%", height: "100%", display: "block" }}
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    WebGL 初始化失败，无法显示 3D 预览
+                  </div>
+                }
+              >
+                <color args={[1, 1, 1, 1]} attach="background" />
             <Suspense
               fallback={
                 <mesh>
@@ -104,6 +119,12 @@ export function PreviewPanel({
               />
             </Suspense>
           </Canvas>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    您的浏览器不支持 WebGL，无法显示 3D 预览
+                  </div>
+                )}
+          </div>
         </ErrorBoundary>
       </div>
     </div>

@@ -85,6 +85,7 @@ function SafeDisplacementMaterial({ displacementScale }) {
 }
 
 const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack }) => {
+  // 确保所有uniforms都被正确初始化
   shader.uniforms.uIsAdjustMode = { value: isAdjustMode ? 1.0 : 0.0 }
   shader.uniforms.uCaseWidth = { value: caseWidth }
   shader.uniforms.uCaseHeight = { value: caseHeight }
@@ -99,18 +100,25 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
     shader.uniforms.uMask = { value: maskTexture }
   }
 
+  // 保存原始的vertexShader，以便我们可以正确地修改它
+  const originalVertexShader = shader.vertexShader;
+  
+  // 首先添加我们的varying变量声明
+  // 我们需要确保这些声明在任何其他代码之前
   shader.vertexShader = `
     varying vec3 vLocalPosition;
     varying vec3 vWorldPosition;
-  ` + shader.vertexShader.replace(
+  ` + originalVertexShader;
+  
+  // 在main函数的开始处添加我们的代码
+  // 注意：我们需要确保我们的代码不会影响Three.js默认的displacementMap逻辑
+  shader.vertexShader = shader.vertexShader.replace(
     'void main() {',
-    `
-    void main() {
-      vLocalPosition = position;
-      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-    `
-  )
+    'void main() {\n      vLocalPosition = position;\n      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;\n'
+  );
 
+  // 修改fragmentShader
+  // 我们只修改fragmentShader，确保我们的修改不会影响vertexShader中的displacementMap逻辑
   shader.fragmentShader = `
     uniform float uIsAdjustMode;
     uniform float uCaseWidth;
@@ -182,41 +190,51 @@ function ReliefClippedMaterial({
   const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
   const scaleValue = (scale / 10) * 5
 
-  useEffect(() => {
+  // 确保深度纹理有效
+  if (isGenerated && depthTexture) {
+    console.log("Rendering ReliefClippedMaterial with depthTexture", depthTexture.id)
+    console.log("Displacement scale:", scaleValue)
+  }
+
+  // 使用useFrame实时更新shader的uniform值
+  useFrame(() => {
     const mat = matRef.current
     if (!mat) return
     
-    // 如果没有深度纹理，或者处于非生成模式，使用默认材质
-    if (!isGenerated || !depthTexture) {
-        if (mat.userData.shader) {
-            // 重置 shader 逻辑可能比较复杂，简单起见，我们在下面通过 isGenerated 控制渲染
-        }
-        return
-    }
-
-    mat.onBeforeCompile = (shader) => {
-      getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack })
-      mat.userData.shader = shader
-    }
-    mat.needsUpdate = true
-  }, [isAdjustMode, caseWidth, caseHeight, maskTexture, planeY, maskLegalIsBlack, isGenerated, depthTexture])
-
-  useFrame(() => {
-    const mat = matRef.current
-    const shader = mat?.userData?.shader
+    const shader = mat.userData.shader
     if (shader) {
+      // 实时更新uIsAdjustMode uniform值
       shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0
+      
+      // 确保其他uniforms也保持最新
       shader.uniforms.uCaseWidth.value = caseWidth
       shader.uniforms.uCaseHeight.value = caseHeight
-      if (shader.uniforms.uPlaneY) shader.uniforms.uPlaneY.value = planeY
-      if (shader.uniforms.uMaskLegalIsBlack) shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
+      shader.uniforms.uPlaneY.value = planeY
+      shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
       
       // 使用硬编码参数
-      if (shader.uniforms.uMaskScale) shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY)
-      if (shader.uniforms.uMaskOffset) shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY)
-      if (shader.uniforms.uMaskTranslate) shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY)
-      if (shader.uniforms.uMaskFlip) shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0)
-      if (shader.uniforms.uMaskRotate) shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0
+      shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY)
+      shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY)
+      shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY)
+      shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0)
+      shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0
+      
+      // 确保displacementMap相关的uniforms被正确更新
+      if (shader.uniforms.displacementMap) {
+        shader.uniforms.displacementMap.value = depthTexture
+      }
+      if (shader.uniforms.displacementScale) {
+        shader.uniforms.displacementScale.value = scaleValue
+      }
+      if (shader.uniforms.displacementBias) {
+        shader.uniforms.displacementBias.value = 0
+      }
+      if (shader.uniforms.map) {
+        shader.uniforms.map.value = depthTexture
+      }
+      if (shader.uniforms.alphaMap) {
+        shader.uniforms.alphaMap.value = depthTexture
+      }
       
       if (maskTexture && shader.uniforms.uMask) {
         shader.uniforms.uMask.value = maskTexture
@@ -235,8 +253,6 @@ function ReliefClippedMaterial({
   }
   
   if (isGenerated && depthTexture) {
-    // 调试日志：确认深度纹理是否有效
-    // console.log("Rendering ReliefClippedMaterial with depthTexture", depthTexture.id)
     return (
       <meshStandardMaterial
         {...commonProps}
@@ -245,6 +261,48 @@ function ReliefClippedMaterial({
         alphaMap={depthTexture} 
         displacementScale={scaleValue}
         displacementBias={0}
+        onBeforeCompile={(shader) => {
+          // 保存shader到userData，方便useFrame中访问
+          matRef.current.userData.shader = shader;
+          
+          // 应用我们的shader修改
+          getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack });
+          
+          // 立即设置所有uniforms，确保shader编译后正确初始化
+          shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0;
+          shader.uniforms.uCaseWidth.value = caseWidth;
+          shader.uniforms.uCaseHeight.value = caseHeight;
+          shader.uniforms.uPlaneY.value = planeY;
+          shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0;
+          
+          // 使用硬编码参数
+          shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY);
+          shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY);
+          shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY);
+          shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0);
+          shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0;
+          
+          // 确保displacementMap相关的uniforms被正确设置
+          if (shader.uniforms.displacementMap) {
+            shader.uniforms.displacementMap.value = depthTexture;
+          }
+          if (shader.uniforms.displacementScale) {
+            shader.uniforms.displacementScale.value = scaleValue;
+          }
+          if (shader.uniforms.displacementBias) {
+            shader.uniforms.displacementBias.value = 0;
+          }
+          if (shader.uniforms.map) {
+            shader.uniforms.map.value = depthTexture;
+          }
+          if (shader.uniforms.alphaMap) {
+            shader.uniforms.alphaMap.value = depthTexture;
+          }
+          
+          if (maskTexture) {
+            shader.uniforms.uMask.value = maskTexture;
+          }
+        }}
       />
     )
   }
@@ -334,8 +392,9 @@ function ReliefPlane({
   const meshRef = useRef(null)
   const [planeDims, setPlaneDims] = useState({ w: 7, h: 7 })
 
-  const SEGMENTS_W = 512
-  const SEGMENTS_H = 512
+  // 降低预览状态的细分度至256
+  const SEGMENTS_W = 256
+  const SEGMENTS_H = 256
 
   const [depthTex, setDepthTex] = useState(null)
   const [isDrawing, setIsDrawing] = useState(false)
@@ -343,6 +402,7 @@ function ReliefPlane({
   const eraserCanvasRef = useRef(null)
   const eraserContextRef = useRef(null)
   const eraserTextureRef = useRef(null)
+  const textureLoaderRef = useRef(null)
 
   const geometry = useMemo(() => {
     return new THREE.PlaneGeometry(planeDims.w, planeDims.h, SEGMENTS_W, SEGMENTS_H)
@@ -353,13 +413,24 @@ function ReliefPlane({
   
   useEffect(() => {
     let isMounted = true
-    const loader = new THREE.TextureLoader()
+    
+    // 初始化纹理加载器
+    textureLoaderRef.current = new THREE.TextureLoader()
+    const loader = textureLoaderRef.current
+    
     const url = depthMapUrl || DEFAULT_DEPTH_MAP_URL
     
     const isBlob = url.startsWith("blob:")
     const timestampedUrl = isBlob ? url : (url + (url.includes('?') ? '&' : '?') + "t=" + Date.now())
     
     console.log("Loading depth texture from:", timestampedUrl)
+    console.log("Mask legal is black:", maskLegalIsBlack)
+
+    // 清理之前的纹理
+    if (eraserTextureRef.current) {
+      eraserTextureRef.current.dispose()
+      eraserTextureRef.current = null
+    }
 
     loader.load(
       timestampedUrl,
@@ -385,14 +456,17 @@ function ReliefPlane({
         canvasTex.minFilter = THREE.LinearFilter
         canvasTex.magFilter = THREE.LinearFilter
         canvasTex.generateMipmaps = false
-        canvasTex.wrapS = canvasTex.wrapT = THREE.RepeatWrapping
+        canvasTex.wrapS = canvasTex.wrapT = THREE.ClampToEdgeWrapping
         
         eraserTextureRef.current = canvasTex
         
+        // 直接使用从TextureLoader加载的纹理作为depthTex
+        // 这样可以确保displacementMap正常工作
         tex.colorSpace = THREE.NoColorSpace
         tex.minFilter = THREE.LinearFilter
         tex.magFilter = THREE.LinearFilter
         tex.generateMipmaps = false
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
         tex.needsUpdate = true
         
         if (img && img.width && img.height) {
@@ -405,7 +479,7 @@ function ReliefPlane({
         
         setDepthTex(prev => {
           if (prev) prev.dispose()
-          return canvasTex
+          return tex
         })
       },
       undefined,
@@ -422,8 +496,21 @@ function ReliefPlane({
     )
     return () => {
       isMounted = false
+      // 清理资源
+      if (eraserTextureRef.current) {
+        eraserTextureRef.current.dispose()
+        eraserTextureRef.current = null
+      }
+      if (eraserCanvasRef.current) {
+        // 清理全局引用
+        if (window.__eraserCanvas === eraserCanvasRef.current) {
+          window.__eraserCanvas = null
+        }
+        eraserCanvasRef.current = null
+      }
+      eraserContextRef.current = null
     }
-  }, [depthMapUrl, depthVersion])
+  }, [depthMapUrl, depthVersion, maskLegalIsBlack])
 
   useEffect(() => {
     if (onEraserDraw) {
@@ -707,9 +794,18 @@ function generateMaskTextureAsync(mesh, width, height, sizeX, sizeZ, onDone) {
 function PhoneCaseSTL({ isAdjustMode, onReady, model = "iphone16" }) {
   const meshRef = useRef(null)
   const [geom, setGeom] = useState(null)
+  const stlLoaderRef = useRef(null)
+  
   useEffect(() => {
-    const loader = new STLLoader()
+    // 清理之前的几何体
+    if (geom) {
+      geom.dispose()
+    }
+    
+    stlLoaderRef.current = new STLLoader()
+    const loader = stlLoaderRef.current
     const path = `/phonecase/${model}.stl`
+    
     loader.load(path, async (geometry) => {
       let g = geometry.clone()
       g.rotateX(Math.PI / 2)
@@ -741,7 +837,32 @@ function PhoneCaseSTL({ isAdjustMode, onReady, model = "iphone16" }) {
         })
       }
     })
-  }, [onReady, model])
+    
+    return () => {
+      // 清理资源
+      if (geom) {
+        geom.dispose()
+      }
+      // 清理网格资源
+      if (meshRef.current) {
+        const mesh = meshRef.current
+        // 遍历Mesh的所有子项并销毁
+        mesh.traverse((node) => {
+          if (node.isMesh) {
+            if (node.geometry) {
+              node.geometry.dispose()
+            }
+            if (Array.isArray(node.material)) {
+              node.material.forEach(m => m.dispose())
+            } else if (node.material) {
+              node.material.dispose()
+            }
+          }
+        })
+      }
+    }
+  }, [onReady, model, geom])
+  
   useEffect(() => {
     if (!meshRef.current) return
     const mesh = meshRef.current
@@ -752,7 +873,9 @@ function PhoneCaseSTL({ isAdjustMode, onReady, model = "iphone16" }) {
       mesh.raycast = orig
     }
   }, [isAdjustMode])
+  
   if (!geom) return null
+  
   return (
     <mesh ref={meshRef} geometry={geom} position={[0, 0, 0]} receiveShadow={false} castShadow={false}>
       {isAdjustMode ? (

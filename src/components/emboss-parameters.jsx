@@ -14,7 +14,7 @@ export function EmbossParameters({
         <input
           type="range"
           min="0.01"
-          max="20"
+          max="4.00"
           step="0.01"
           value={height[0]}
           onChange={(e) => onHeightChange([Number(e.target.value)])}

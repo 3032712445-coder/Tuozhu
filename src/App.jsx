@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Layers, Download, Box } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { PhoneModelSelector } from "@/components/phone-model-selector"
@@ -223,6 +223,25 @@ async function buildCombinedMesh({
 }) {
   console.log("Start buildCombinedMesh", { phoneModel })
   
+  // 内存清理函数
+  const cleanup = () => {
+    if (typeof caseGeometry !== 'undefined' && caseGeometry) {
+      caseGeometry.dispose()
+    }
+    if (typeof reliefGeo !== 'undefined' && reliefGeo) {
+      reliefGeo.dispose()
+    }
+    if (typeof caseGeoNonIndexed !== 'undefined' && caseGeoNonIndexed) {
+      caseGeoNonIndexed.dispose()
+    }
+    if (typeof reliefGeoNonIndexed !== 'undefined' && reliefGeoNonIndexed) {
+      reliefGeoNonIndexed.dispose()
+    }
+    if (typeof mergedGeo !== 'undefined' && mergedGeo) {
+      mergedGeo.dispose()
+    }
+  }
+  
   // 1. 加载手机壳基底模型
   let caseGeometry
   try {
@@ -257,12 +276,12 @@ async function buildCombinedMesh({
   if (!depthPixels || depthPixels.length === 0) throw new Error("深度图数据为空")
   if (reliefWidthInScene <= 0.001 || reliefHeightInScene <= 0.001) throw new Error("浮雕尺寸无效")
 
-  // 使用高细分平面作为浮雕
-  // 细分度取决于浮雕尺寸，确保精度
-  // 提升到 800 以获得超高精度（接近 100万个面），适合精细打印
-  const segW = Math.floor(800 * reliefScale)
-  const segH = Math.floor(800 * reliefScale * depthAspect)
+  // 导出时使用更高的细分度
+  const baseSegments = 800
+  const segW = Math.floor(baseSegments * reliefScale)
+  const segH = Math.floor(baseSegments * reliefScale * depthAspect)
   const reliefGeo = new THREE.PlaneGeometry(reliefWidthInScene, reliefHeightInScene, segW, segH)
+  console.log(`Creating relief geometry with segments: ${segW}x${segH}`)
   
   // 4. 应用置换与裁剪
   const posAttr = reliefGeo.getAttribute("position")
@@ -485,6 +504,17 @@ async function buildCombinedMesh({
   // 6. 强制更新世界矩阵
   mesh.updateMatrixWorld(true)
   
+  // 清理中间几何体，释放内存
+  try {
+    if (caseGeometry) caseGeometry.dispose()
+    if (reliefGeo) reliefGeo.dispose()
+    if (caseGeoNonIndexed) caseGeoNonIndexed.dispose()
+    if (reliefGeoNonIndexed) reliefGeoNonIndexed.dispose()
+    // 注意：不清理mergedGeo，因为它被mesh使用
+  } catch (e) {
+    console.warn("Error during geometry cleanup:", e)
+  }
+  
   return mesh
 }
 
@@ -583,15 +613,66 @@ export default function App() {
   const [isAdjustMode, setIsAdjustMode] = useState(false)
   const [reliefPosition, setReliefPosition] = useState({ x: 0, y: 0 })
   
+  // 内存监控和清理机制
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.performance) return
+    
+    const checkMemoryUsage = () => {
+      try {
+        if (window.performance.memory) {
+          const memory = window.performance.memory
+          const usedJSHeapSize = memory.usedJSHeapSize / (1024 * 1024) // MB
+          const totalJSHeapSize = memory.totalJSHeapSize / (1024 * 1024) // MB
+          
+          console.log(`Memory usage: ${usedJSHeapSize.toFixed(2)} MB / ${totalJSHeapSize.toFixed(2)} MB`)
+          
+          // 如果内存使用超过80%，建议浏览器进行垃圾回收
+          if (usedJSHeapSize / totalJSHeapSize > 0.8) {
+            console.warn("High memory usage detected, triggering garbage collection")
+            if (window.gc) {
+              window.gc()
+            }
+          }
+        }
+      } catch (e) {
+        // performance.memory 可能在某些浏览器中不可用
+      }
+    }
+    
+    // 每隔10秒检查一次内存使用情况
+    const interval = setInterval(checkMemoryUsage, 10000)
+    
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
+  
+  // 清理深度图URL的函数
+  const cleanupDepthUrl = () => {
+    if (depthUrl && depthUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(depthUrl)
+        console.log("Revoked depth URL:", depthUrl)
+      } catch (e) {
+        console.warn("Failed to revoke old depth URL:", e)
+      }
+    }
+  }
+
+  const [isLoading, setIsLoading] = useState(false)
+
   const handleAiGenerate = async () => {
     try {
-      setIsGenerating(true)
       console.log("开始 AI 生成，prompt:", aiPrompt)
+      
+      // 清理之前的深度图URL，释放内存
+      cleanupDepthUrl()
+      
       const imageUrl = await generateImage(aiPrompt || "")
       console.log("AI 生成图片 URL:", imageUrl)
       setUploadedImage(imageUrl)
       setUploadedFile(null)
-      setIsDepthGenerating(true)
+      
       const depthObjUrl = await generateDepthByUrl(imageUrl)
       setDepthUrl(depthObjUrl)
       setDepthVersion(v => v + 1)
@@ -599,16 +680,17 @@ export default function App() {
     } catch (err) {
       console.error(err)
       alert(`AI 生成或深度生成失败: ${err.message}`)
-    } finally {
-      setIsGenerating(false)
-      setIsDepthGenerating(false)
     }
   }
 
   const handleGenerate3D = async () => {
     console.log("开始生成")
     try {
-      setIsDepthGenerating(true)
+      setIsLoading(true)
+      
+      // 清理之前的深度图URL，释放内存
+      cleanupDepthUrl()
+      
       if (!uploadedFile && !uploadedImage) {
         setDepthUrl("/test-depth.jpg")
         setDepthVersion(v => v + 1)
@@ -634,9 +716,17 @@ export default function App() {
       console.error(err)
       alert("生成失败")
     } finally {
-      setIsDepthGenerating(false)
+      setIsLoading(false)
     }
   }
+
+  // 组件卸载时清理资源
+  useEffect(() => {
+    return () => {
+      // 清理深度图URL
+      cleanupDepthUrl()
+    }
+  }, [])
 
   const handleExportSTL = async () => {
     if (!depthUrl) {
@@ -644,6 +734,7 @@ export default function App() {
       return
     }
     const currentModel = phoneModel || "iphone16" // 默认回退到 iphone16
+    let embossedMesh = null
     try {
       let pixels, width, height
 
@@ -662,7 +753,7 @@ export default function App() {
         height = data.height
       }
 
-      const embossedMesh = await buildCombinedMesh({
+      embossedMesh = await buildCombinedMesh({
         phoneModel: currentModel,
         embossHeight,
         embossSize,
@@ -675,11 +766,19 @@ export default function App() {
       const exporter = new STLExporter()
       const stlText = exporter.parse(embossedMesh, { binary: true })
       triggerStlDownload(stlText, currentModel)
-      embossedMesh.geometry.dispose()
-      embossedMesh.material.dispose()
     } catch (error) {
       console.error("导出 STL 失败:", error)
       alert(`导出 STL 失败: ${error.message}`)
+    } finally {
+      // 确保清理mesh资源
+      if (embossedMesh) {
+        try {
+          if (embossedMesh.geometry) embossedMesh.geometry.dispose()
+          if (embossedMesh.material) embossedMesh.material.dispose()
+        } catch (e) {
+          console.warn("Error during mesh cleanup:", e)
+        }
+      }
     }
   }
 
@@ -702,44 +801,53 @@ export default function App() {
         </p>
       </header>
 
-      <main className="flex flex-1 flex-col lg:flex-row">
-        <aside className="flex w-full flex-col border-b border-border/60 lg:w-[380px] lg:shrink-0 lg:border-b-0 lg:border-r">
-          <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-6">
-            <PhoneModelSelector
-              value={phoneModel}
-              onValueChange={setPhoneModel}
-            />
-            <div className="h-px bg-border/40" />
-            <ImageInputArea
-              uploadedImage={uploadedImage}
-              onImageUpload={(file, url) => {
-                setUploadedFile(file)
-                setUploadedImage(url)
-              }}
-              aiPrompt={aiPrompt}
-              onAiPromptChange={setAiPrompt}
-              onAiGenerate={handleAiGenerate}
-              isGenerating={isGenerating}
-              isDepthGenerating={isDepthGenerating}
-            />
-            <div className="h-px bg-border/40" />
-            <EmbossParameters
-              height={embossHeight}
-              size={embossSize}
-              rotation={reliefRotation}
-              onHeightChange={setEmbossHeight}
-              onSizeChange={setEmbossSize}
-              onRotationChange={setReliefRotation}
-            />
+      {isLoading ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary mb-4"></div>
+            <h3 className="text-lg font-medium mb-2">正在加载...</h3>
+            <p className="text-sm text-muted-foreground">请稍候，正在生成深度图</p>
           </div>
+        </div>
+      ) : (
+        <main className="flex flex-1 flex-col lg:flex-row">
+          <aside className="flex w-full flex-col border-b border-border/60 lg:w-[380px] lg:shrink-0 lg:border-b-0 lg:border-r">
+            <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-6">
+              <PhoneModelSelector
+                value={phoneModel}
+                onValueChange={setPhoneModel}
+              />
+              <div className="h-px bg-border/40" />
+              <ImageInputArea
+                uploadedImage={uploadedImage}
+                onImageUpload={(file, url) => {
+                  setUploadedFile(file)
+                  setUploadedImage(url)
+                }}
+                aiPrompt={aiPrompt}
+                onAiPromptChange={setAiPrompt}
+                onAiGenerate={handleAiGenerate}
+                isGenerating={isLoading}
+                isDepthGenerating={isLoading}
+              />
+              <div className="h-px bg-border/40" />
+              <EmbossParameters
+                height={embossHeight}
+                size={embossSize}
+                rotation={reliefRotation}
+                onHeightChange={setEmbossHeight}
+                onSizeChange={setEmbossSize}
+                onRotationChange={setReliefRotation}
+              />
+            </div>
 
-          <div className="flex flex-col gap-2 border-t border-border/60 p-4">
-            <Button onClick={handleGenerate3D} className="w-full" size="lg">
-              <Layers className="size-4" />
-              生成 3D 浮雕
-            </Button>
-            <Button onClick={handleExportSTL} variant="outline" className="w-full" size="lg">
-              <Download className="size-4" />
+            <div className="flex flex-col gap-2 border-t border-border/60 p-4">
+              <Button onClick={handleGenerate3D} className="w-full" size="lg" disabled={isLoading}>
+                <Layers className="size-4" />
+                生成 3D 浮雕
+              </Button>
+              <Button onClick={handleExportSTL} variant="outline" className="w-full" size="lg" disabled={!isGenerated || isLoading}>
+                <Download className="size-4" />
               导出打印模型 (STL)
             </Button>
           </div>
@@ -761,6 +869,7 @@ export default function App() {
           />
         </section>
       </main>
+      )}
     </div>
   )
 }
