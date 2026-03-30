@@ -96,9 +96,8 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
   shader.uniforms.uMaskTranslate = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY) }
   shader.uniforms.uMaskFlip = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0) }
   shader.uniforms.uMaskRotate = { value: IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0 }
-  if (maskTexture) {
-    shader.uniforms.uMask = { value: maskTexture }
-  }
+  // 确保uMask uniform总是被初始化，即使maskTexture为null
+  shader.uniforms.uMask = { value: maskTexture || null }
 
   // 保存原始的vertexShader，以便我们可以正确地修改它
   const originalVertexShader = shader.vertexShader;
@@ -159,6 +158,7 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
     ${maskTexture ? 'maskv = texture2D(uMask, uv).r;' : ''}
     
     bool underPlane = vWorldPosition.y < (uPlaneY + 1e-4);
+    // 修正掩码逻辑，确保与App.jsx中的isPointInMask函数逻辑一致
     bool hole = (uMaskLegalIsBlack > 0.5) ? (maskv > 0.5) : (maskv < 0.5);
     
     vec4 diffuseColor = vec4( diffuse, opacity );
@@ -186,20 +186,24 @@ function ReliefClippedMaterial({
   maskLegalIsBlack = false
  }) {
   const matRef = useRef(null)
-  // 确保 scale 是数值且足够大
-  const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
-  const scaleValue = (scale / 10) * 5
+  const materialKey = useMemo(() => {
+    // 当maskTexture变化时，强制重新创建材质
+    return `${isGenerated}-${depthTexture?.id || 'null'}-${maskTexture?.id || 'null'}-${maskLegalIsBlack}`
+  }, [isGenerated, depthTexture, maskTexture, maskLegalIsBlack])
 
   // 确保深度纹理有效
   if (isGenerated && depthTexture) {
     console.log("Rendering ReliefClippedMaterial with depthTexture", depthTexture.id)
-    console.log("Displacement scale:", scaleValue)
   }
 
   // 使用useFrame实时更新shader的uniform值
   useFrame(() => {
     const mat = matRef.current
     if (!mat) return
+    
+    // 实时计算scaleValue
+    const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
+    const scaleValue = (scale / 10) * 5
     
     const shader = mat.userData.shader
     if (shader) {
@@ -236,7 +240,7 @@ function ReliefClippedMaterial({
         shader.uniforms.alphaMap.value = depthTexture
       }
       
-      if (maskTexture && shader.uniforms.uMask) {
+      if (shader.uniforms.uMask) {
         shader.uniforms.uMask.value = maskTexture
       }
     }
@@ -253,8 +257,13 @@ function ReliefClippedMaterial({
   }
   
   if (isGenerated && depthTexture) {
+    // 计算scaleValue
+    const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
+    const scaleValue = (scale / 10) * 5
+    
     return (
       <meshStandardMaterial
+        key={materialKey}
         {...commonProps}
         map={depthTexture} // 显式绑定颜色贴图，这样即使置换不明显，也能看到图片
         displacementMap={depthTexture}
@@ -442,23 +451,6 @@ function ReliefPlane({
         console.log("Depth texture loaded successfully", tex.image.width, tex.image.height)
         
         const img = tex.image
-        const canvas = document.createElement("canvas")
-        canvas.width = img.width
-        canvas.height = img.height
-        const ctx = canvas.getContext("2d")
-        ctx.drawImage(img, 0, 0)
-        
-        eraserCanvasRef.current = canvas
-        eraserContextRef.current = ctx
-        
-        const canvasTex = new THREE.CanvasTexture(canvas)
-        canvasTex.colorSpace = THREE.NoColorSpace
-        canvasTex.minFilter = THREE.LinearFilter
-        canvasTex.magFilter = THREE.LinearFilter
-        canvasTex.generateMipmaps = false
-        canvasTex.wrapS = canvasTex.wrapT = THREE.ClampToEdgeWrapping
-        
-        eraserTextureRef.current = canvasTex
         
         // 直接使用从TextureLoader加载的纹理作为depthTex
         // 这样可以确保displacementMap正常工作
@@ -730,11 +722,19 @@ function loadMaskTexture(model) {
     })
   return (async () => {
     // 优先使用 <model>.png（黑色=合法，白色=孔洞）
+    console.log(`Loading mask texture for model: ${model}`)
     let tex = await tryLoad(`/phonecase/${model}.png`)
-    if (tex) return { tex, legalIsBlack: true }
+    if (tex) {
+      console.log(`Successfully loaded mask texture: /phonecase/${model}.png`)
+      return { tex, legalIsBlack: true }
+    }
     // 其次尝试 <model>_mask.png（白色=合法，黑色=孔洞）的旧约定
     tex = await tryLoad(`/phonecase/${model}_mask.png`)
-    if (tex) return { tex, legalIsBlack: false }
+    if (tex) {
+      console.log(`Successfully loaded mask texture: /phonecase/${model}_mask.png`)
+      return { tex, legalIsBlack: false }
+    }
+    console.warn(`No mask texture found for model: ${model}`)
     return { tex: null, legalIsBlack: false }
   })()
 }

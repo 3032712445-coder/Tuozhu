@@ -1,5 +1,6 @@
 import sys
 import os
+import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -329,3 +330,69 @@ def get_latest_depth():
             "Expires": "0",
         }
     )
+
+@app.get("/history")
+def get_history():
+    # 读取uploads目录下的所有文件
+    upload_files = []
+    for file in os.listdir(UPLOAD_DIR):
+        if file.endswith(('.png', '.jpg', '.jpeg', '.gif')):
+            file_path = os.path.join(UPLOAD_DIR, file)
+            mtime = os.path.getmtime(file_path)
+            upload_files.append((file, mtime))
+    
+    # 按时间排序，取最新的5个
+    upload_files.sort(key=lambda x: x[1], reverse=True)
+    latest_files = upload_files[:5]
+    
+    # 构建响应
+    history = []
+    for file, mtime in latest_files:
+        # 生成图片URL
+        img_url = f"http://localhost:8001/uploads/{file}"
+        
+        # 找到对应的深度图
+        base_name = os.path.splitext(file)[0]
+        depth_file = f"{base_name}.png"
+        depth_path = os.path.join(OUTPUT_DIR, depth_file)
+        
+        if os.path.exists(depth_path):
+            depth_url = f"http://localhost:8001/outputs/{depth_file}"
+        else:
+            # 如果没有对应的深度图，使用最新的深度图
+            output_files = sorted(
+                os.listdir(OUTPUT_DIR),
+                key=lambda x: os.path.getmtime(os.path.join(OUTPUT_DIR, x)),
+                reverse=True
+            )
+            if output_files:
+                depth_url = f"http://localhost:8001/outputs/{output_files[0]}"
+            else:
+                depth_url = ""
+        
+        # 格式化时间戳
+        timestamp = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+        
+        history.append({
+            "url": img_url,
+            "depthUrl": depth_url,
+            "timestamp": timestamp
+        })
+    
+    return {"images": history}
+
+@app.get("/uploads/{file}")
+def get_uploaded_file(file):
+    file_path = os.path.join(UPLOAD_DIR, file)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    else:
+        return {"error": "File not found"}
+
+@app.get("/outputs/{file}")
+def get_output_file(file):
+    file_path = os.path.join(OUTPUT_DIR, file)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    else:
+        return {"error": "File not found"}

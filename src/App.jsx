@@ -298,14 +298,11 @@ async function buildCombinedMesh({
     //    这已经将几何体 Top 对齐到了 Phone Top (+Z)。
     //    所以我们只需要标准的 V 映射 (Image Top -> Geometry Top)。
     //    v = ly / height + 0.5
-    // 2. 水平方向 (U)：
-    //    Geometry Y 180 旋转会将 +X (原 Right) 变为 -X (现 Left)。
-    //    这意味着 Geometry 的右侧会出现在 Phone 的左侧。
-    //    我们需要 Image Left (u=0) 出现在 Phone Left (-X)。
-    //    即我们需要将 Image Left 映射到 Geometry Right。
-    //    所以 U 需要反转。
+    // 水平方向 (U)：
+    // 由于移除了镜像处理，现在不需要反转 U 坐标
+    // 保持与预览中的浮雕一致
     
-    const u = 1.0 - (lx / reliefWidthInScene + 0.5) // 反转 U
+    const u = (lx / reliefWidthInScene + 0.5) // 不反转 U
     const v = (ly / reliefHeightInScene + 0.5)      // 标准 V
     
     const depth = sampleGrayBilinear(depthPixels, depthWidth, depthHeight, u, v)
@@ -388,13 +385,11 @@ async function buildCombinedMesh({
   reliefGeo.computeBoundingBox() 
   reliefGeo.computeVertexNormals()
   
-  // 旋转修正：
+  // 应用X轴旋转修正，保持与预览中的浮雕一致
   reliefGeo.rotateX(-Math.PI / 2)
-  reliefGeo.rotateY(-rot + Math.PI) 
   
-  // 镜像修正：仅对浮雕进行 X 轴镜像
-  // 因为 UV 翻转和旋转可能导致了左右颠倒，这里单独修正浮雕
-  reliefGeo.scale(-1, 1, 1)
+  // 沿自身z轴方向做镜像翻转
+  reliefGeo.scale(1, 1, -1)
   reliefGeo.computeVertexNormals() // 镜像后重算法线
   
   reliefGeo.translate(reliefPosition.x, 0, reliefPosition.y)
@@ -455,11 +450,7 @@ async function buildCombinedMesh({
 
   // --- 导出前标准化流程 ---
   
-  // 1. 强制居中 (Center)
-  mergedGeo.computeBoundingBox()
-  mergedGeo.center()
-
-  // 2. 统一缩放 (Scale) 到毫米单位
+  // 1. 统一缩放 (Scale) 到毫米单位
   // 先检查当前尺寸
   mergedGeo.computeBoundingBox()
   const currentSize = new THREE.Vector3()
@@ -473,11 +464,17 @@ async function buildCombinedMesh({
     mergedGeo.scale(scaleFactor, scaleFactor, scaleFactor)
   }
   
-  // 3. 贴地处理 (Floor Alignment)
+  // 2. 贴地处理 (Floor Alignment)
   // 缩放后重新计算包围盒
   mergedGeo.computeBoundingBox()
   const minY = mergedGeo.boundingBox.min.y
   mergedGeo.translate(0, -minY, 0) // 底部对齐 Y=0
+  
+  // 3. 强制居中 (Center) - 只在X和Z方向居中，保持Y方向的贴地效果
+  mergedGeo.computeBoundingBox()
+  const center = new THREE.Vector3()
+  mergedGeo.boundingBox.getCenter(center)
+  mergedGeo.translate(-center.x, 0, -center.z)
 
   // 4. 法线重算 (Recompute Normals)
   mergedGeo.computeVertexNormals()
@@ -829,6 +826,22 @@ export default function App() {
                 onAiGenerate={handleAiGenerate}
                 isGenerating={isLoading}
                 isDepthGenerating={isLoading}
+                onHistoryImageSelect={async (image) => {
+                  try {
+                    setIsLoading(true)
+                    // 直接使用已有的深度图，不需要重新推理
+                    setDepthUrl(image.depthUrl)
+                    setDepthVersion(v => v + 1)
+                    setIsGenerated(true)
+                    setUploadedImage(image.url)
+                    setUploadedFile(null)
+                  } catch (err) {
+                    console.error(err)
+                    alert(`加载深度图失败: ${err.message}`)
+                  } finally {
+                    setIsLoading(false)
+                  }
+                }}
               />
               <div className="h-px bg-border/40" />
               <EmbossParameters
