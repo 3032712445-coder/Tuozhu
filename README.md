@@ -74,12 +74,19 @@
 
  2.安装依赖
 
+  ### 自动安装（推荐）
+  运行自动安装脚本，会检测GPU并安装对应的依赖：
+  ```bash
+  python install_gpu_deps.py
+  ```
+
+  ### 手动安装
   ```bash
   cd backend/depth_service
   pip install -r requirements.txt
   如果没有requirements.txt，可以手动安装：
   pip install fastapi uvicorn pillow numpy opencv-python torch torchvision
-  
+  ```
 
  3.下载仓库为https://github.com/gangweix/pixel-perfect-depth，
   在他们的Readme里找到：![alt text](image.png)
