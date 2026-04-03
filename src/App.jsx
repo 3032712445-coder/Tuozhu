@@ -844,6 +844,7 @@ export default function App() {
           <div className="text-center">
             <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary mb-4"></div>
             <h3 className="text-lg font-medium mb-2">正在加载...</h3>
+            <p className="text-sm text-gray-500">请勿刷新网页</p>
             <p className="text-sm text-muted-foreground">请稍候，正在生成深度图</p>
           </div>
         </div>

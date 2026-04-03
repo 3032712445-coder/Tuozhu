@@ -107,13 +107,29 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
   shader.vertexShader = `
     varying vec3 vLocalPosition;
     varying vec3 vWorldPosition;
+    varying vec2 vUv;
   ` + originalVertexShader;
   
   // 在main函数的开始处添加我们的代码
   // 注意：我们需要确保我们的代码不会影响Three.js默认的displacementMap逻辑
   shader.vertexShader = shader.vertexShader.replace(
     'void main() {',
-    'void main() {\n      vLocalPosition = position;\n      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;\n'
+    'void main() {\n      vLocalPosition = position;\n      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;\n      vUv = uv;\n'
+  );
+  
+  // 修改位移映射逻辑，只对顶面顶点应用位移
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <displacementmap_vertex>',
+    `
+    #ifdef USE_DISPLACEMENTMAP
+      // 只有当本地坐标 z > -0.005 时才应用位移（即只作用于顶面）
+      if (position.z > -0.005) {
+        vec3 vNormal = normalize( normal );
+        float fDisplacement = texture2D( displacementMap, uv ).x;
+        transformed += vNormal * ( fDisplacement * displacementScale + displacementBias );
+      }
+    #endif
+    `
   );
 
   // 修改fragmentShader
@@ -248,12 +264,11 @@ function ReliefClippedMaterial({
 
   const commonProps = {
     ref: matRef,
-    color: "#d4d4d4",
+    color: "#c0c0c0", // 更亮的颜色，增强细节可见性
     side: DoubleSide,
-    roughness: 0.4,
-    metalness: 0.1,
-    transparent: true,
-    alphaTest: 0.05,
+    roughness: 0.6, // 适当减少粗糙度，让光线更好地反射细节
+    metalness: 0.0, // 保持非金属感
+    transparent: false, // 移除透明效果
   }
   
   if (isGenerated && depthTexture) {
@@ -413,9 +428,128 @@ function ReliefPlane({
   const eraserTextureRef = useRef(null)
   const textureLoaderRef = useRef(null)
 
+  // 生成水密几何体的函数
+  const createWatertightGeometry = useCallback((width, height, segmentsW, segmentsH) => {
+    // 使用 PlaneGeometry 作为基础顶点源
+    const reliefGeoRaw = new THREE.PlaneGeometry(width, height, segmentsW, segmentsH)
+    const posAttrRaw = reliefGeoRaw.getAttribute("position")
+    const indexAttrRaw = reliefGeoRaw.getIndex()
+
+    if (!indexAttrRaw) {
+      reliefGeoRaw.dispose()
+      return new THREE.PlaneGeometry(width, height, segmentsW, segmentsH)
+    }
+
+    const rawIndices = indexAttrRaw.array
+    const keptFaces = []
+
+    // 保留所有面，因为预览时不需要掩码过滤
+    for (let i = 0; i < rawIndices.length; i += 3) {
+      keptFaces.push(rawIndices[i], rawIndices[i+1], rawIndices[i+2])
+    }
+
+    // 构建独立顶点池
+    const vertexMap = new Int32Array(posAttrRaw.count).fill(-1)
+    let keptVertexCount = 0
+    const topVertices = []
+    const uvsRaw = reliefGeoRaw.getAttribute("uv")
+    const topUvs = []
+
+    for (let i = 0; i < keptFaces.length; i++) {
+      const rawIdx = keptFaces[i]
+      if (vertexMap[rawIdx] === -1) {
+        vertexMap[rawIdx] = keptVertexCount
+        topVertices.push(
+          posAttrRaw.getX(rawIdx),
+          posAttrRaw.getY(rawIdx),
+          0.01 // 预览时使用0.01作为基础高度，确保位移映射生效
+        )
+        if (uvsRaw) {
+          topUvs.push(uvsRaw.getX(rawIdx), uvsRaw.getY(rawIdx))
+        }
+        keptVertexCount++
+      }
+    }
+
+    // 复制顶点作为底面，缝合顶底
+    const finalVertices = new Float32Array(keptVertexCount * 3 * 2)
+    const bottomVertices = []
+    const baseZ = -0.01 // 与导出时保持一致，嵌入0.01mm
+    for(let i = 0; i < keptVertexCount; i++) {
+      bottomVertices.push(topVertices[i*3], topVertices[i*3+1], baseZ)
+    }
+    finalVertices.set(topVertices, 0)
+    finalVertices.set(bottomVertices, keptVertexCount * 3)
+
+    const finalUvs = new Float32Array(keptVertexCount * 2 * 2)
+    if (uvsRaw) {
+      finalUvs.set(topUvs, 0)
+      finalUvs.set(topUvs, keptVertexCount * 2)
+    }
+
+    const finalIndices = []
+    const edgeCount = new Map()
+    const edgeMap = new Map()
+
+    for (let i = 0; i < keptFaces.length; i += 3) {
+      const a_raw = keptFaces[i]
+      const b_raw = keptFaces[i+1]
+      const c_raw = keptFaces[i+2]
+
+      const a = vertexMap[a_raw]
+      const b = vertexMap[b_raw]
+      const c = vertexMap[c_raw]
+
+      // 压入顶面
+      finalIndices.push(a, b, c)
+      // 压入底面 (法线反向)
+      const a_bot = a + keptVertexCount
+      const b_bot = b + keptVertexCount
+      const c_bot = c + keptVertexCount
+      finalIndices.push(c_bot, b_bot, a_bot)
+
+      // 统计边缘以生成墙壁
+      const addEdge = (v1, v2) => {
+        const key = Math.min(v1, v2) + '_' + Math.max(v1, v2)
+        if (edgeCount.has(key)) {
+          edgeCount.set(key, edgeCount.get(key) + 1)
+        } else {
+          edgeCount.set(key, 1)
+          edgeMap.set(key, { v1, v2 })
+        }
+      }
+      addEdge(a, b)
+      addEdge(b, c)
+      addEdge(c, a)
+    }
+
+    // 为所有悬空的边界构建竖直的“墙壁”
+    for (const [key, count] of edgeCount.entries()) {
+      if (count === 1) { // 只有引用一次的边是外界边缘
+        const { v1, v2 } = edgeMap.get(key)
+        const v1_bot = v1 + keptVertexCount
+        const v2_bot = v2 + keptVertexCount
+        finalIndices.push(v1, v1_bot, v2_bot)
+        finalIndices.push(v1, v2_bot, v2)
+      }
+    }
+
+    // 生成最终的水密几何体
+    const reliefGeo = new THREE.BufferGeometry()
+    reliefGeo.setAttribute('position', new THREE.BufferAttribute(finalVertices, 3))
+    if (uvsRaw) {
+      reliefGeo.setAttribute('uv', new THREE.BufferAttribute(finalUvs, 2))
+    }
+    reliefGeo.setIndex(finalIndices)
+    reliefGeo.computeVertexNormals()
+
+    reliefGeoRaw.dispose() // 释放缓存
+    return reliefGeo
+  }, [])
+
   const geometry = useMemo(() => {
-    return new THREE.PlaneGeometry(planeDims.w, planeDims.h, SEGMENTS_W, SEGMENTS_H)
-  }, [planeDims.w, planeDims.h])
+    return createWatertightGeometry(planeDims.w, planeDims.h, SEGMENTS_W, SEGMENTS_H)
+  }, [planeDims.w, planeDims.h, createWatertightGeometry])
 
   const sizeVal = Array.isArray(reliefSize) ? reliefSize[0] : reliefSize
   const scale = 0.3 + ((sizeVal - 20) / 180) * 2.2
@@ -910,10 +1044,19 @@ export function Scene3D({
 
   return (
     <>
-      <ambientLight intensity={0.8} />
+      <ambientLight intensity={0.6} />
       <directionalLight
         position={[5, 10, 5]}
+        intensity={1.2}
+        castShadow
+      />
+      <directionalLight
+        position={[-5, 10, -5]}
         intensity={0.8}
+      />
+      <directionalLight
+        position={[0, 10, -10]}
+        intensity={0.5}
       />
 
       <group>
@@ -961,12 +1104,15 @@ export function Scene3D({
 
       <OrbitControls
         ref={controlsRef}
+        makeDefault
         enabled={!isAdjustMode && !isEraserMode}
         enableDamping
         dampingFactor={0.05}
         minDistance={5}
-        maxDistance={30}
+        maxDistance={60}
         maxPolarAngle={Math.PI / 2 - 0.05}
+        zoomToCursor={true}
+        mouseWheelSpeed={2}
       />
 
       <CameraController isAdjustMode={isAdjustMode} controlsRef={controlsRef} />
