@@ -33,3 +33,6 @@ backend/depth_service/outputs/*
 backend/depth_service/uploads/*
 __pycache__/
 *.pyc
+
+#others
+todo.docx

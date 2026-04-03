@@ -262,7 +262,7 @@ async function buildCombinedMesh({
   // 2. 加载掩模数据
   const maskData = await loadMaskData(phoneModel)
   
-  // 3. 生成浮雕几何体
+  // 3. 生成浮雕几何体 (采用水密包裹算法 Watertight Algorithm)
   const depthAspect = depthWidth / depthHeight
   const reliefScale = getReliefSizeScale(embossSize)
   const reliefHeightInScene = 7 * reliefScale
@@ -271,131 +271,172 @@ async function buildCombinedMesh({
   const rot = (reliefRotation * Math.PI) / 180
   const cosR = Math.cos(-rot)
   const sinR = Math.sin(-rot)
+  
+  const bottomOffset = -0.01 // 只嵌入0.01mm，让浮雕底面正好与手机壳背面接触
+  const baseZ = bottomOffset // 保持底面与手机壳接触
 
-  // 前置检查
   if (!depthPixels || depthPixels.length === 0) throw new Error("深度图数据为空")
-  if (reliefWidthInScene <= 0.001 || reliefHeightInScene <= 0.001) throw new Error("浮雕尺寸无效")
 
-  // 导出时使用更高的细分度
-  const baseSegments = 800
+  const baseSegments = 512
   const segW = Math.floor(baseSegments * reliefScale)
   const segH = Math.floor(baseSegments * reliefScale * depthAspect)
-  const reliefGeo = new THREE.PlaneGeometry(reliefWidthInScene, reliefHeightInScene, segW, segH)
-  console.log(`Creating relief geometry with segments: ${segW}x${segH}`)
   
-  // 4. 应用置换与裁剪
-  const posAttr = reliefGeo.getAttribute("position")
-  const vertexDisplacements = new Float32Array(posAttr.count)
+  console.log(`Creating watertight relief with segments: ${segW}x${segH}`)
   
-  for (let i = 0; i < posAttr.count; i++) {
-    const lx = posAttr.getX(i) 
-    const ly = posAttr.getY(i) 
-    
-    // UV 映射修正：
-    // 为了配合后续的几何体 180 度旋转 (rotateY(Math.PI))：
-    // 1. 垂直方向 (V)：
-    //    Geometry Y 180 旋转会将 -Z (原 Top) 变为 +Z (现 Top)。
-    //    这已经将几何体 Top 对齐到了 Phone Top (+Z)。
-    //    所以我们只需要标准的 V 映射 (Image Top -> Geometry Top)。
-    //    v = ly / height + 0.5
-    // 水平方向 (U)：
-    // 由于移除了镜像处理，现在不需要反转 U 坐标
-    // 保持与预览中的浮雕一致
-    
-    const u = (lx / reliefWidthInScene + 0.5) // 不反转 U
-    const v = (ly / reliefHeightInScene + 0.5)      // 标准 V
-    
+  // 使用 PlaneGeometry 作为基础顶点源
+  const reliefGeoRaw = new THREE.PlaneGeometry(reliefWidthInScene, reliefHeightInScene, segW, segH)
+  const posAttrRaw = reliefGeoRaw.getAttribute("position")
+  const indexAttrRaw = reliefGeoRaw.getIndex()
+
+  // 记录顶点的有效性和高度
+  const vertexValid = new Uint8Array(posAttrRaw.count)
+  const vertexDisp = new Float32Array(posAttrRaw.count)
+
+  for (let i = 0; i < posAttrRaw.count; i++) {
+    const lx = posAttrRaw.getX(i)
+    const ly = posAttrRaw.getY(i)
+
+    const u = (lx / reliefWidthInScene + 0.5)
+    const v = (ly / reliefHeightInScene + 0.5)
+
     const depth = sampleGrayBilinear(depthPixels, depthWidth, depthHeight, u, v)
     let displacement = depth * maxEmbossHeight
-    
-    // NaN 检查与修复
-    if (!Number.isFinite(displacement)) {
-      displacement = 0
-    }
+    if (!Number.isFinite(displacement)) displacement = 0
+    if (displacement < 0.05) displacement = 0 // 去除底噪
 
-    // 阈值过滤：消除底噪，确保黑色区域完全贴合
-    if (displacement < 0.05) displacement = 0
-
-    posAttr.setZ(i, displacement)
-    vertexDisplacements[i] = displacement // 记录原始置换值用于后续剔除
-    
-    // 世界坐标计算修正（与 UV 修正对应）
     const wx_rot = lx * cosR - ly * sinR
     const wz_rot = lx * sinR + ly * cosR
     const wx = wx_rot + reliefPosition.x
     const wz = wz_rot + reliefPosition.y
-    
-    // 坐标 NaN 检查
-    if (!Number.isFinite(wx) || !Number.isFinite(wz)) {
-      posAttr.setZ(i, 0)
-      vertexDisplacements[i] = 0
-      continue
-    }
 
     const halfW = caseWidth / 2
     const halfH = caseHeight / 2
     const isOutsideCase = Math.abs(wx) > halfW || Math.abs(wz) > halfH
-    
     const isHole = isPointInMask(wx, wz, maskData, caseWidth, caseHeight)
-    
+
     if (isOutsideCase || isHole) {
-       posAttr.setZ(i, 0)
-       vertexDisplacements[i] = 0
+      vertexValid[i] = 0
+      vertexDisp[i] = 0
+    } else {
+      vertexValid[i] = 1
+      vertexDisp[i] = displacement
     }
   }
-  
-  // --- 剔除高度为 0 的无效面 (Face Culling) ---
-  // PlaneGeometry 默认是有索引的 (indexed geometry)
-  // 我们需要遍历索引，检查每个三角形的三个顶点
-  // 如果三个顶点的高度都为 0，则说明该面在底面上，可以剔除
-  
-  const indexAttr = reliefGeo.getIndex()
-  if (!indexAttr) {
-    throw new Error("PlaneGeometry 应该有索引")
-  }
-  
-  const indices = indexAttr.array
-  const newIndices = []
-  
-  // 遍历所有三角形
-  for (let i = 0; i < indices.length; i += 3) {
-    const a = indices[i]
-    const b = indices[i + 1]
-    const c = indices[i + 2]
-    
-    // 检查这三个顶点的置换高度
-    const dispA = vertexDisplacements[a]
-    const dispB = vertexDisplacements[b]
-    const dispC = vertexDisplacements[c]
-    
-    // 如果任意一个顶点有高度 > 0，则保留该面
-    // 只有当三个点全为 0 时才剔除
-    if (dispA > 0.001 || dispB > 0.001 || dispC > 0.001) {
-      newIndices.push(a, b, c)
+
+  const rawIndices = indexAttrRaw.array
+  const keptFaces =[]
+
+  // 筛选出合法的面
+  for (let i = 0; i < rawIndices.length; i += 3) {
+    const a = rawIndices[i]
+    const b = rawIndices[i+1]
+    const c = rawIndices[i+2]
+
+    const allValid = vertexValid[a] && vertexValid[b] && vertexValid[c]
+    const hasDisp = vertexDisp[a] > 0 || vertexDisp[b] > 0 || vertexDisp[c] > 0
+
+    if (allValid && hasDisp) {
+      keptFaces.push(a, b, c)
     }
   }
-  
-  // 更新索引缓冲区
-  reliefGeo.setIndex(newIndices)
-  
-  // 清理未使用的顶点（可选，BufferGeometryUtils.mergeVertices 可以做，但这里只要面没了就行）
-  // 为了确保导出干净，我们可以不清理顶点，因为 STLExporter 只关心面
-  
-  posAttr.needsUpdate = true
-  reliefGeo.computeBoundingBox() 
+
+  // 构建独立顶点池
+  const vertexMap = new Int32Array(posAttrRaw.count).fill(-1)
+  let keptVertexCount = 0
+  const topVertices =[]
+  const uvsRaw = reliefGeoRaw.getAttribute("uv")
+  const topUvs =[]
+
+  for (let i = 0; i < keptFaces.length; i++) {
+    const rawIdx = keptFaces[i]
+    if (vertexMap[rawIdx] === -1) {
+      vertexMap[rawIdx] = keptVertexCount
+      topVertices.push(
+        posAttrRaw.getX(rawIdx),
+        posAttrRaw.getY(rawIdx),
+        vertexDisp[rawIdx] + bottomOffset
+      )
+      topUvs.push(uvsRaw.getX(rawIdx), uvsRaw.getY(rawIdx))
+      keptVertexCount++
+    }
+  }
+
+  // 复制顶点作为底面，缝合顶底
+  const finalVertices = new Float32Array(keptVertexCount * 3 * 2)
+  const bottomVertices =[]
+  for(let i=0; i<keptVertexCount; i++) {
+    bottomVertices.push(topVertices[i*3], topVertices[i*3+1], baseZ)
+  }
+  finalVertices.set(topVertices, 0)
+  finalVertices.set(bottomVertices, keptVertexCount * 3)
+
+  const finalUvs = new Float32Array(keptVertexCount * 2 * 2)
+  finalUvs.set(topUvs, 0)
+  finalUvs.set(topUvs, keptVertexCount * 2)
+
+  const finalIndices =[]
+  const edgeCount = new Map()
+  const edgeMap = new Map()
+
+  for (let i = 0; i < keptFaces.length; i += 3) {
+    const a_raw = keptFaces[i]
+    const b_raw = keptFaces[i+1]
+    const c_raw = keptFaces[i+2]
+
+    const a = vertexMap[a_raw]
+    const b = vertexMap[b_raw]
+    const c = vertexMap[c_raw]
+
+    // 压入顶面
+    finalIndices.push(a, b, c)
+    // 压入底面 (法线反向)
+    const a_bot = a + keptVertexCount
+    const b_bot = b + keptVertexCount
+    const c_bot = c + keptVertexCount
+    finalIndices.push(c_bot, b_bot, a_bot)
+
+    // 统计边缘以生成墙壁
+    const addEdge = (v1, v2) => {
+      const key = Math.min(v1, v2) + '_' + Math.max(v1, v2)
+      if (edgeCount.has(key)) {
+        edgeCount.set(key, edgeCount.get(key) + 1)
+      } else {
+        edgeCount.set(key, 1)
+        edgeMap.set(key, { v1, v2 })
+      }
+    }
+    addEdge(a, b)
+    addEdge(b, c)
+    addEdge(c, a)
+  }
+
+  // 为所有悬空的边界构建竖直的“墙壁”
+  for (const [key, count] of edgeCount.entries()) {
+    if (count === 1) { // 只有引用一次的边是外界边缘
+      const { v1, v2 } = edgeMap.get(key)
+      const v1_bot = v1 + keptVertexCount
+      const v2_bot = v2 + keptVertexCount
+      finalIndices.push(v1, v1_bot, v2_bot)
+      finalIndices.push(v1, v2_bot, v2)
+    }
+  }
+
+  // 生成最终的水密几何体
+  const reliefGeo = new THREE.BufferGeometry()
+  reliefGeo.setAttribute('position', new THREE.BufferAttribute(finalVertices, 3))
+  reliefGeo.setAttribute('uv', new THREE.BufferAttribute(finalUvs, 2))
+  reliefGeo.setIndex(finalIndices)
+
   reliefGeo.computeVertexNormals()
-  
-  // 应用X轴旋转修正，保持与预览中的浮雕一致
+
+  // 坐标复位与矩阵变换
   reliefGeo.rotateX(-Math.PI / 2)
-  
-  // 沿自身z轴方向做镜像翻转
   reliefGeo.scale(1, 1, -1)
-  reliefGeo.computeVertexNormals() // 镜像后重算法线
-  
+  reliefGeo.computeVertexNormals()
   reliefGeo.translate(reliefPosition.x, 0, reliefPosition.y)
-  
-  // 强制更新世界矩阵（虽然 geometry 变换是直接改顶点，但安全起见）
   reliefGeo.computeBoundingBox()
+  
+  reliefGeoRaw.dispose() // 释放缓存
   
   // 5. 合并几何体
   const caseGeoNonIndexed = caseGeometry.toNonIndexed()
