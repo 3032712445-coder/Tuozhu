@@ -349,50 +349,160 @@ function pointerToPlaneIntersection(clientX, clientY, camera, gl, plane, target)
  * 浮雕平面：position 始终来自 reliefPosition；
  * 调整模式下在 mesh 上绑定指针事件实现二维拖拽，并仅在浮雕上设置 grab/grabbing 光标。
  */
+
 function EraserCapturePlane({ 
   isEraserMode, 
   reliefPosition, 
   planeY, 
   onEraserDraw, 
-  scale 
+  scale,
+  width,
+  height,
+  eraserRadius
 }) {
-  const meshRef = useRef(null)
+  const cursorCircleRef = useRef(null)
+  const mousePosRef = useRef({ x: 0, y: 0 })
+  const lastUvRef = useRef(null)
   
   if (!isEraserMode) return null
 
-  return (
-    <mesh
-      ref={meshRef}
-      position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.05, reliefPosition.y]}
-      rotation={[-Math.PI / 2, 0, 0]}
-      scale={[scale, scale, 1]}
-      visible={false}
-    >
-      <planeGeometry args={[7, 7]} /> 
-      <meshBasicMaterial visible={false} />
+  // 计算两个UV点之间的距离
+  const distanceBetweenUvs = (uv1, uv2) => {
+    return Math.sqrt(Math.pow(uv2.x - uv1.x, 2) + Math.pow(uv2.y - uv1.y, 2))
+  }
+
+  // 在两个UV点之间生成中间点
+  const interpolateUvs = (uv1, uv2, steps) => {
+    const points = []
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      points.push({
+        x: uv1.x + (uv2.x - uv1.x) * t,
+        y: uv1.y + (uv2.y - uv1.y) * t
+      })
+    }
+    return points
+  }
+
+  // 鼠标处理函数
+  const handlePointer = (e, type) => {
+    e.stopPropagation()
+    
+    // 直接使用事件中的UV坐标
+    const uv = e.uv
+    
+    if (!uv) return
+    
+    // 计算模型空间中的位置
+    const x = (uv.x - 0.5) * width * scale + reliefPosition.x
+    // 修正纵向坐标，使用 (1 - uv.y) 来确保与鼠标位置一致
+    const z = (1 - uv.y - 0.5) * height * scale + reliefPosition.y
+    
+    // 更新鼠标位置
+    mousePosRef.current = { x, y: z }
+    
+    // 更新光标圆圈位置
+    if (cursorCircleRef.current) {
+      cursorCircleRef.current.position.set(
+        x, 
+        planeY + RELIEF_OFFSET + 0.06, 
+        z
+      )
+    }
+    
+    // 执行擦除
+    if (type === "start") {
+      onEraserDraw(uv, type)
+      lastUvRef.current = uv
+    } else if (type === "move" && lastUvRef.current) {
+      // 计算当前UV与上一次UV之间的距离
+      const distance = distanceBetweenUvs(lastUvRef.current, uv)
       
+      // 根据距离确定需要生成的中间点数量
+      // 确保两点之间的距离不超过擦除半径的一半
+      const eraserRadiusUv = eraserRadius / 1024 // 转换为UV坐标下的半径
+      const steps = Math.max(1, Math.ceil(distance / (eraserRadiusUv / 2)))
+      
+      // 生成中间点
+      const points = interpolateUvs(lastUvRef.current, uv, steps)
+      
+      // 对每个中间点执行擦除
+      points.forEach(point => {
+        onEraserDraw(point, type)
+      })
+      
+      // 更新上一次UV
+      lastUvRef.current = uv
+    } else if (type === "end") {
+      onEraserDraw(uv, type)
+      lastUvRef.current = null
+    }
+  }
+
+  return (
+    <>
+      {/* 捕获平面 */}
       <mesh
+        position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.01, reliefPosition.y]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        scale={[scale, scale, 1]}
         onPointerDown={(e) => {
             e.stopPropagation()
             e.target.setPointerCapture(e.pointerId)
-            onEraserDraw(e.uv, "start")
+            handlePointer(e, "start")
         }}
         onPointerMove={(e) => {
+            e.stopPropagation()
             if (e.buttons === 1) {
-                e.stopPropagation()
-                onEraserDraw(e.uv, "move")
+              handlePointer(e, "move")
+            } else {
+              // 即使没有按下，也更新光标位置
+              handlePointer(e, "hover")
             }
         }}
         onPointerUp={(e) => {
             e.stopPropagation()
             e.target.releasePointerCapture(e.pointerId)
-            onEraserDraw(e.uv, "end")
+            handlePointer(e, "end")
         }}
+        onPointerOut={() => {
+            // 鼠标移出时隐藏圆圈
+            if (cursorCircleRef.current) {
+              cursorCircleRef.current.visible = false
+            }
+        }}
+        onPointerOver={() => {
+            // 鼠标移入时显示圆圈
+            if (cursorCircleRef.current) {
+              cursorCircleRef.current.visible = true
+            }
+        }}
+        style={{ cursor: 'crosshair' }}
       >
-         <planeGeometry args={[7, 7]} />
-         <meshBasicMaterial transparent opacity={0.0} depthWrite={false} color="red" />
+        <planeGeometry args={[width, height]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
-    </mesh>
+      
+      {/* 擦除区域指示圆圈 */}
+      <mesh 
+        ref={cursorCircleRef} 
+        visible={isEraserMode}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.06, reliefPosition.y]}
+      >
+        {/* 动态调整圆圈大小，与擦除半径保持一致 */}
+        {/* 计算方法：(eraserRadius / canvasWidth) * planeWidth * scale */}
+        {/* 假设canvasWidth为1024，planeWidth为width */}
+        <circleGeometry args={[(eraserRadius / 1024) * width * scale, 32]} />
+        <meshBasicMaterial 
+          color="rgba(255, 0, 0, 0.5)" 
+          transparent 
+          depthWrite={false}
+          depthTest={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </>
   )
 }
 
@@ -422,6 +532,7 @@ function ReliefPlane({
 
   const [depthTex, setDepthTex] = useState(null)
   const [isDrawing, setIsDrawing] = useState(false)
+  const [eraserRadius, setEraserRadius] = useState(5) // 默认擦除半径为5像素
   
   const eraserCanvasRef = useRef(null)
   const eraserContextRef = useRef(null)
@@ -599,14 +710,40 @@ function ReliefPlane({
           const aspect = img.width / img.height
           const baseH = 7
           setPlaneDims({ w: baseH * aspect, h: baseH })
+          
+          // 创建临时Canvas用于擦除操作
+          const canvas = document.createElement('canvas')
+          canvas.width = img.width
+          canvas.height = img.height
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0)
+          
+          // 创建擦除纹理
+          const eraserTex = new THREE.CanvasTexture(canvas)
+          eraserTex.colorSpace = THREE.NoColorSpace
+          eraserTex.minFilter = THREE.LinearFilter
+          eraserTex.magFilter = THREE.LinearFilter
+          eraserTex.generateMipmaps = false
+          eraserTex.wrapS = eraserTex.wrapT = THREE.ClampToEdgeWrapping
+          eraserTex.needsUpdate = true
+          
+          // 存储擦除相关的引用
+          eraserCanvasRef.current = canvas
+          eraserContextRef.current = ctx
+          eraserTextureRef.current = eraserTex
+          
+          // 使用擦除纹理作为depthTex
+          setDepthTex(prev => {
+            if (prev) prev.dispose()
+            return eraserTex
+          })
         } else {
           setPlaneDims({ w: 7, h: 7 })
+          setDepthTex(prev => {
+            if (prev) prev.dispose()
+            return tex
+          })
         }
-        
-        setDepthTex(prev => {
-          if (prev) prev.dispose()
-          return tex
-        })
       },
       undefined,
       (err) => {
@@ -654,7 +791,8 @@ function ReliefPlane({
     const x = uv.x * canvas.width
     const y = (1.0 - uv.y) * canvas.height
     
-    const radius = Math.max(20, canvas.width * 0.05) 
+    // 使用用户可调整的擦除半径
+    const radius = eraserRadius
 
     ctx.globalCompositeOperation = "source-over"
     ctx.fillStyle = "black" 
@@ -663,6 +801,8 @@ function ReliefPlane({
     ctx.arc(x, y, radius, 0, Math.PI * 2)
     ctx.fill()
     
+    // 为了减少卡顿，只在必要时更新纹理
+    // 可以考虑添加节流或防抖处理
     tex.needsUpdate = true
   }
 
@@ -702,6 +842,59 @@ function ReliefPlane({
     }
   }, [isAdjustMode])
 
+  // 渲染擦除半径调整滑条
+  useEffect(() => {
+    if (isEraserMode) {
+      // 创建滑条容器
+      const container = document.createElement('div')
+      container.id = 'eraser-radius-slider'
+      container.style.position = 'absolute'
+      container.style.top = '10px'
+      container.style.right = '10px'
+      container.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'
+      container.style.padding = '10px'
+      container.style.borderRadius = '5px'
+      container.style.zIndex = '1000'
+      container.style.fontFamily = 'Arial, sans-serif'
+      
+      // 创建标签
+      const label = document.createElement('label')
+      label.style.display = 'block'
+      label.style.marginBottom = '5px'
+      label.textContent = `擦除半径: ${eraserRadius}px`
+      
+      // 创建滑条
+      const slider = document.createElement('input')
+      slider.type = 'range'
+      slider.min = '1'
+      slider.max = '20'
+      slider.value = eraserRadius
+      slider.style.width = '150px'
+      
+      // 滑条变化事件
+      const handleChange = (e) => {
+        const value = parseInt(e.target.value)
+        setEraserRadius(value)
+        label.textContent = `擦除半径: ${value}px`
+      }
+      
+      slider.addEventListener('input', handleChange)
+      
+      // 组装并添加到文档
+      container.appendChild(label)
+      container.appendChild(slider)
+      document.body.appendChild(container)
+      
+      // 清理函数
+      return () => {
+        slider.removeEventListener('input', handleChange)
+        if (container.parentNode) {
+          container.parentNode.removeChild(container)
+        }
+      }
+    }
+  }, [isEraserMode, eraserRadius])
+
   return (
     <>
       <mesh
@@ -732,6 +925,9 @@ function ReliefPlane({
         reliefPosition={reliefPosition}
         planeY={planeY}
         scale={scale}
+        width={planeDims.w}
+        height={planeDims.h}
+        eraserRadius={eraserRadius}
         onEraserDraw={onEraserInteraction}
       />
     </>
