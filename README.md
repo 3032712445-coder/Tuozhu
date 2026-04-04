@@ -3,7 +3,7 @@
 一个基于 Vite + React + Three.js（@react-three/fiber）的实验项目，用于在本地预览 3D 浮雕手机壳的交互效果。
 
 ## 本地运行
-
+- 请保证设备下载了[Node.js](https://nodejs.org/zh-tw/download/current)与[git](https://git-scm.com/install/)
 - 进入项目目录
   - Windows PowerShell：
     ```bash
