@@ -534,6 +534,14 @@ function ReliefPlane({
   const [isDrawing, setIsDrawing] = useState(false)
   const [eraserRadius, setEraserRadius] = useState(5) // 默认擦除半径为5像素
   
+  // 撤销和前溯功能 - 使用useRef存储历史记录
+  const undoStack = useRef([]);
+  const redoStack = useRef([]);
+  const MAX_HISTORY = 20;
+  
+  // 状态变量用于跟踪栈的长度，以触发UI更新
+  const [stackLengths, setStackLengths] = useState({ undo: 0, redo: 0 });
+  
   const eraserCanvasRef = useRef(null)
   const eraserContextRef = useRef(null)
   const eraserTextureRef = useRef(null)
@@ -737,6 +745,15 @@ function ReliefPlane({
             if (prev) prev.dispose()
             return eraserTex
           })
+          
+          // 初始化撤销栈
+          const initCtx = canvas.getContext('2d');
+          const initialState = initCtx.getImageData(0, 0, canvas.width, canvas.height);
+          undoStack.current = [initialState];
+          redoStack.current = [];
+          // 更新栈长度状态
+          setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
+          console.log('Initial state saved to undo stack');
         } else {
           setPlaneDims({ w: 7, h: 7 })
           setDepthTex(prev => {
@@ -806,11 +823,82 @@ function ReliefPlane({
     tex.needsUpdate = true
   }
 
+  // 辅助函数：保存当前状态到撤销栈
+  const saveState = useCallback(() => {
+    const canvas = eraserCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    // 存储 ImageData 比 DataURL 快，但更占内存
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    undoStack.current.push(data);
+    if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift();
+    redoStack.current = []; // 每次新操作都要清空重做栈
+    // 更新栈长度状态
+    setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
+    console.log('saveState: undo stack length:', undoStack.current.length);
+  }, []);
+
   const onEraserInteraction = (uv, type) => {
-      if (type === "move" || type === "start") {
+      console.log('onEraserInteraction: type:', type)
+      if (type === "start") {
+          // 操作前先存快照
+          console.log('onEraserInteraction: calling saveState')
+          saveState();
+          drawEraser(uv)
+      } else if (type === "move") {
           drawEraser(uv)
       }
   }
+
+  // 撤销功能
+  const handleUndo = useCallback(() => {
+    if (undoStack.current.length === 0) return;
+    console.log('handleUndo: undo stack length:', undoStack.current.length);
+    
+    const canvas = eraserCanvasRef.current;
+    const ctx = eraserContextRef.current;
+    const tex = eraserTextureRef.current;
+    
+    if (!canvas || !ctx || !tex) return;
+    
+    // 将当前状态存入重做栈
+    const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    redoStack.current.push(currentState);
+    if (redoStack.current.length > MAX_HISTORY) redoStack.current.shift();
+    
+    // 弹出上一个状态并恢复
+    const lastState = undoStack.current.pop();
+    ctx.putImageData(lastState, 0, 0);
+    tex.needsUpdate = true;
+    // 更新栈长度状态
+    setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
+    console.log('handleUndo: undo completed, new undo stack length:', undoStack.current.length);
+  }, []);
+
+  // 前溯功能
+  const handleRedo = useCallback(() => {
+    if (redoStack.current.length === 0) return;
+    console.log('handleRedo: redo stack length:', redoStack.current.length);
+    
+    const canvas = eraserCanvasRef.current;
+    const ctx = eraserContextRef.current;
+    const tex = eraserTextureRef.current;
+    
+    if (!canvas || !ctx || !tex) return;
+    
+    // 将当前状态存入撤销栈
+    const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    undoStack.current.push(currentState);
+    if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift();
+    
+    // 弹出下一个状态并恢复
+    const nextState = redoStack.current.pop();
+    ctx.putImageData(nextState, 0, 0);
+    tex.needsUpdate = true;
+    // 更新栈长度状态
+    setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
+    console.log('handleRedo: redo completed, new redo stack length:', redoStack.current.length);
+  }, []);
   
   useEffect(() => {
       if (eraserCanvasRef.current) {
@@ -842,26 +930,92 @@ function ReliefPlane({
     }
   }, [isAdjustMode])
 
-  // 渲染擦除半径调整滑条
+  // 渲染擦除模式UI
   useEffect(() => {
     if (isEraserMode) {
-      // 创建滑条容器
-      const container = document.createElement('div')
-      container.id = 'eraser-radius-slider'
-      container.style.position = 'absolute'
-      container.style.top = '10px'
-      container.style.right = '10px'
-      container.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'
-      container.style.padding = '10px'
-      container.style.borderRadius = '5px'
-      container.style.zIndex = '1000'
-      container.style.fontFamily = 'Arial, sans-serif'
+      // 创建按钮容器（上方中央）
+      const buttonContainer = document.createElement('div')
+      buttonContainer.id = 'eraser-buttons'
+      buttonContainer.style.position = 'absolute'
+      buttonContainer.style.top = '10px'
+      buttonContainer.style.left = '50%'
+      buttonContainer.style.transform = 'translateX(-50%)'
+      buttonContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'
+      buttonContainer.style.padding = '8px'
+      buttonContainer.style.borderRadius = '5px'
+      buttonContainer.style.zIndex = '1000'
+      buttonContainer.style.display = 'flex'
+      buttonContainer.style.alignItems = 'center'
+      buttonContainer.style.gap = '10px'
+      
+      // 创建撤销按钮
+      const undoButton = document.createElement('button')
+      undoButton.textContent = '←'
+      undoButton.title = '撤销'
+      undoButton.style.padding = '8px 12px'
+      undoButton.style.border = '1px solid #ccc'
+      undoButton.style.borderRadius = '3px'
+      undoButton.style.cursor = 'pointer'
+      
+      // 创建前溯按钮
+      const redoButton = document.createElement('button')
+      redoButton.textContent = '→'
+      redoButton.title = '前溯'
+      redoButton.style.padding = '8px 12px'
+      redoButton.style.border = '1px solid #ccc'
+      redoButton.style.borderRadius = '3px'
+      redoButton.style.cursor = 'pointer'
+      redoButton.style.fontSize = '16px'
+      redoButton.style.fontWeight = 'bold'
+      
+      // 更新按钮状态的函数
+      const updateButtonStates = () => {
+        undoButton.style.backgroundColor = stackLengths.undo > 1 ? '#4CAF50' : '#ccc'
+        undoButton.style.color = stackLengths.undo > 1 ? 'white' : '#666'
+        undoButton.style.fontSize = '16px'
+        undoButton.style.fontWeight = 'bold'
+        redoButton.style.backgroundColor = stackLengths.redo > 0 ? '#4CAF50' : '#ccc'
+        redoButton.style.color = stackLengths.redo > 0 ? 'white' : '#666'
+        redoButton.style.fontSize = '16px'
+        redoButton.style.fontWeight = 'bold'
+      }
+      
+      // 初始更新按钮状态
+      updateButtonStates()
+      
+      // 监听撤销按钮点击
+      const handleUndoClick = () => {
+        handleUndo();
+      }
+      undoButton.addEventListener('click', handleUndoClick)
+      
+      // 监听前溯按钮点击
+      const handleRedoClick = () => {
+        handleRedo();
+      }
+      redoButton.addEventListener('click', handleRedoClick)
+      
+      // 添加按钮到容器
+      buttonContainer.appendChild(undoButton)
+      buttonContainer.appendChild(redoButton)
+      
+      // 创建滑条容器（右侧）
+      const sliderContainer = document.createElement('div')
+      sliderContainer.id = 'eraser-radius-slider'
+      sliderContainer.style.position = 'absolute'
+      sliderContainer.style.top = '10px'
+      sliderContainer.style.right = '10px'
+      sliderContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.8)'
+      sliderContainer.style.padding = '10px'
+      sliderContainer.style.borderRadius = '5px'
+      sliderContainer.style.zIndex = '1000'
+      sliderContainer.style.fontFamily = 'Arial, sans-serif'
       
       // 创建标签
       const label = document.createElement('label')
+      label.textContent = `擦除半径: ${eraserRadius}px`
       label.style.display = 'block'
       label.style.marginBottom = '5px'
-      label.textContent = `擦除半径: ${eraserRadius}px`
       
       // 创建滑条
       const slider = document.createElement('input')
@@ -880,20 +1034,28 @@ function ReliefPlane({
       
       slider.addEventListener('input', handleChange)
       
-      // 组装并添加到文档
-      container.appendChild(label)
-      container.appendChild(slider)
-      document.body.appendChild(container)
+      // 添加到滑条容器
+      sliderContainer.appendChild(label)
+      sliderContainer.appendChild(slider)
+      
+      // 添加到页面
+      document.body.appendChild(buttonContainer)
+      document.body.appendChild(sliderContainer)
       
       // 清理函数
       return () => {
+        undoButton.removeEventListener('click', handleUndoClick)
+        redoButton.removeEventListener('click', handleRedoClick)
         slider.removeEventListener('input', handleChange)
-        if (container.parentNode) {
-          container.parentNode.removeChild(container)
+        if (buttonContainer.parentNode) {
+          buttonContainer.parentNode.removeChild(buttonContainer)
+        }
+        if (sliderContainer.parentNode) {
+          sliderContainer.parentNode.removeChild(sliderContainer)
         }
       }
     }
-  }, [isEraserMode, eraserRadius])
+  }, [isEraserMode, eraserRadius, handleUndo, handleRedo, stackLengths])
 
   return (
     <>
