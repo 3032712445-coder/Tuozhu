@@ -16,6 +16,14 @@ const [showHistory, setShowHistory] = useState(false)
 const [historyImages, setHistoryImages] = useState([])
 
 const handleFile = (e) => {
+  // 检查是否正在生成图片
+  if (isGenerating) {
+    alert("请等待生图完毕")
+    // 清空文件输入，避免用户再次点击时直接上传
+    e.target.value = ''
+    return
+  }
+  
   // 检查是否选择了手机型号
   if (!phoneModel) {
     alert("请先选择手机型号")
@@ -38,7 +46,7 @@ const handleFile = (e) => {
 
 const fetchHistoryImages = async () => {
   try {
-    const response = await fetch('http://localhost:8001/history')
+    const response = await fetch('http://localhost:8000/history')
     if (response.ok) {
       const data = await response.json()
       setHistoryImages(data.images || [])
@@ -49,11 +57,23 @@ const fetchHistoryImages = async () => {
 }
 
 const handleHistoryClick = () => {
+  // 检查是否正在生成图片
+  if (isGenerating) {
+    alert("请等待生图完毕")
+    return
+  }
+  
   setShowHistory(true)
   fetchHistoryImages()
 }
 
 const handleImageSelect = (image) => {
+  // 检查是否正在生成图片
+  if (isGenerating) {
+    alert("请等待生图完毕")
+    return
+  }
+  
   if (onHistoryImageSelect) {
     onHistoryImageSelect(image)
   }

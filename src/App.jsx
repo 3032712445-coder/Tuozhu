@@ -718,7 +718,7 @@ async function generateDepth(file) {
   formData.append("file", file)
 
   console.log("正在发送深度图生成请求...", file.name)
-  const res = await fetch("http://127.0.0.1:8001/depth", {
+  const res = await fetch("http://127.0.0.1:8000/depth", {
     method: "POST",
     body: formData
   })
@@ -756,7 +756,7 @@ async function generateImage(prompt) {
 
 async function generateDepthByUrl(imageUrl) {
   console.log("正在发送 URL 深度图生成请求...", imageUrl)
-  const res = await fetch("http://127.0.0.1:8001/depth/by-url", {
+  const res = await fetch("http://127.0.0.1:8000/depth/by-url", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -854,6 +854,9 @@ export default function App() {
     try {
       console.log("开始 AI 生成，prompt:", aiPrompt)
       
+      // 设置生成状态，禁止操作
+      setIsGenerating(true)
+      
       // 清理之前的深度图URL，释放内存
       cleanupDepthUrl()
       
@@ -862,13 +865,15 @@ export default function App() {
       setUploadedImage(imageUrl)
       setUploadedFile(null)
       
-      const depthObjUrl = await generateDepthByUrl(imageUrl)
-      setDepthUrl(depthObjUrl)
-      setDepthVersion(v => v + 1)
-      setIsGenerated(true)
+      // 只更新上传的图片，不直接调用深度图生成
+      // 深度图生成将在用户点击生成浮雕时进行
+      setIsGenerated(false)
     } catch (err) {
       console.error(err)
-      alert(`AI 生成或深度生成失败: ${err.message}`)
+      alert(`AI 生成失败: ${err.message}`)
+    } finally {
+      // 无论成功失败，都要重置生成状态
+      setIsGenerating(false)
     }
   }
 
@@ -879,6 +884,7 @@ export default function App() {
     console.log("开始生成")
     try {
       setIsLoading(true)
+      setIsDepthGenerating(true)
       
       // 清理之前的深度图URL，释放内存
       cleanupDepthUrl()
@@ -897,9 +903,10 @@ export default function App() {
         setIsGenerated(true)
         return
       }
-      if (uploadedImage && /^https?:\/\//.test(uploadedImage)) {
-        const result = await generateDepthByUrl(uploadedImage)
-        setDepthUrl(result)
+      if (uploadedImage) {
+        // 处理AI生成的图片，调用深度图生成
+        const depthObjUrl = await generateDepthByUrl(uploadedImage)
+        setDepthUrl(depthObjUrl)
         setDepthVersion(v => v + 1)
         setIsGenerated(true)
         return
@@ -909,6 +916,7 @@ export default function App() {
       alert("生成失败")
     } finally {
       setIsLoading(false)
+      setIsDepthGenerating(false)
     }
   }
 
@@ -1023,8 +1031,8 @@ export default function App() {
                 aiPrompt={aiPrompt}
                 onAiPromptChange={setAiPrompt}
                 onAiGenerate={handleAiGenerate}
-                isGenerating={isLoading}
-                isDepthGenerating={isLoading}
+                isGenerating={isGenerating}
+                isDepthGenerating={isDepthGenerating}
                 phoneModel={phoneModel}
                 onHistoryImageSelect={async (image) => {
                   // 检查是否选择了手机型号

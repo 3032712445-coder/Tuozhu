@@ -93,9 +93,8 @@
   按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型权重并放到checkpoints文件夹
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
      
- 3.启动后端服务（8001 for 深度图生成，8000 for 智谱AI生图）
-uvicorn backend.depth_service.api:app --port 8001 --reload
-uvicorn main:app --port 8000 --reload
+ 3.启动后端服务（同时启动两个服务）
+uvicorn main:app --reload
 - `npm install`：安装依赖。
 - `npm run dev`：启动开发服务器进行本地预览。
 - `npm run build`：打包生成静态文件（dist）。
