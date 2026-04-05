@@ -9,12 +9,21 @@ export function ImageInputArea({
   isGenerating,
   isDepthGenerating,
   onHistoryImageSelect,
+  phoneModel,
 }) {
 console.log("🔥 ImageInputArea 加载成功")
 const [showHistory, setShowHistory] = useState(false)
 const [historyImages, setHistoryImages] = useState([])
 
 const handleFile = (e) => {
+  // 检查是否选择了手机型号
+  if (!phoneModel) {
+    alert("请先选择手机型号")
+    // 清空文件输入，避免用户再次点击时直接上传
+    e.target.value = ''
+    return
+  }
+  
   const file = e.target.files?.[0]
   if (!file) return
 

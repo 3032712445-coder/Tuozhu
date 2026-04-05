@@ -71,6 +71,141 @@ function sampleGrayBilinear(pixels, width, height, u, v) {
   return Number.isFinite(val) ? val : 0.0
 }
 
+// 边缘柔化处理函数
+function softenEdges(pixels, width, height) {
+  // 创建一个新的像素数组，避免直接修改原数据
+  const newData = new Uint8ClampedArray(pixels.length)
+  
+  // 复制原始数据
+  for (let i = 0; i < pixels.length; i++) {
+    newData[i] = pixels[i]
+  }
+  
+  // 定义更大的邻域范围（16个方向，包括更远的像素）
+  const offsets = [
+    [-2, -2], [-2, -1], [-2, 0], [-2, 1], [-2, 2],
+    [-1, -2], [-1, -1], [-1, 0], [-1, 1], [-1, 2],
+    [0, -2],  [0, -1],           [0, 1],  [0, 2],
+    [1, -2],  [1, -1],  [1, 0],  [1, 1],  [1, 2],
+    [2, -2],  [2, -1],  [2, 0],  [2, 1],  [2, 2]
+  ]
+  
+  // 遍历每个像素
+  for (let y = 2; y < height - 2; y++) {
+    for (let x = 2; x < width - 2; x++) {
+      const idx = (y * width + x) * 4
+      const currentValue = pixels[idx]
+      
+      // 检查当前像素是否为边缘像素
+      // 边缘像素的定义：当前像素值为0，周围有非零像素；或者当前像素值非零，周围有0像素
+      let hasZeroNeighbor = false
+      let hasNonZeroNeighbor = false
+      
+      for (const [dx, dy] of offsets) {
+        const nx = x + dx
+        const ny = y + dy
+        const nIdx = (ny * width + nx) * 4
+        const neighborValue = pixels[nIdx]
+        
+        if (neighborValue === 0) {
+          hasZeroNeighbor = true
+        } else {
+          hasNonZeroNeighbor = true
+        }
+      }
+      
+      // 如果是边缘像素（一侧为0，一侧有高度）
+      if (hasZeroNeighbor && hasNonZeroNeighbor) {
+        // 计算周围非零像素的加权平均值，距离越近权重越大
+        let sum = 0
+        let totalWeight = 0
+        
+        for (const [dx, dy] of offsets) {
+          const nx = x + dx
+          const ny = y + dy
+          const nIdx = (ny * width + nx) * 4
+          const neighborValue = pixels[nIdx]
+          
+          if (neighborValue > 0) {
+            // 计算距离权重，距离越近权重越大
+            const distance = Math.sqrt(dx * dx + dy * dy)
+            const weight = 1 / (distance + 1) // 避免除以0
+            sum += neighborValue * weight
+            totalWeight += weight
+          }
+        }
+        
+        if (totalWeight > 0) {
+          const weightedAvg = Math.round(sum / totalWeight)
+          // 对于边缘像素，使用加权平均值进行柔化
+          newData[idx] = weightedAvg // R通道
+          newData[idx + 1] = weightedAvg // G通道
+          newData[idx + 2] = weightedAvg // B通道
+        }
+      }
+    }
+  }
+  
+  // 进行第二次迭代，进一步柔化边缘
+  const secondPass = new Uint8ClampedArray(newData.length)
+  for (let i = 0; i < newData.length; i++) {
+    secondPass[i] = newData[i]
+  }
+  
+  for (let y = 2; y < height - 2; y++) {
+    for (let x = 2; x < width - 2; x++) {
+      const idx = (y * width + x) * 4
+      const currentValue = newData[idx]
+      
+      // 检查当前像素是否为边缘像素
+      let hasZeroNeighbor = false
+      let hasNonZeroNeighbor = false
+      
+      for (const [dx, dy] of offsets) {
+        const nx = x + dx
+        const ny = y + dy
+        const nIdx = (ny * width + nx) * 4
+        const neighborValue = newData[nIdx]
+        
+        if (neighborValue === 0) {
+          hasZeroNeighbor = true
+        } else {
+          hasNonZeroNeighbor = true
+        }
+      }
+      
+      // 如果是边缘像素，再次进行柔化
+      if (hasZeroNeighbor && hasNonZeroNeighbor) {
+        let sum = 0
+        let totalWeight = 0
+        
+        for (const [dx, dy] of offsets) {
+          const nx = x + dx
+          const ny = y + dy
+          const nIdx = (ny * width + nx) * 4
+          const neighborValue = newData[nIdx]
+          
+          if (neighborValue > 0) {
+            const distance = Math.sqrt(dx * dx + dy * dy)
+            const weight = 1 / (distance + 1)
+            sum += neighborValue * weight
+            totalWeight += weight
+          }
+        }
+        
+        if (totalWeight > 0) {
+          const weightedAvg = Math.round(sum / totalWeight)
+          secondPass[idx] = weightedAvg
+          secondPass[idx + 1] = weightedAvg
+          secondPass[idx + 2] = weightedAvg
+        }
+      }
+    }
+  }
+  
+  return secondPass
+}
+
 async function loadDepthImageData(depthMapUrl) {
   const image = new Image()
   image.crossOrigin = "anonymous"
@@ -98,7 +233,11 @@ async function loadDepthImageData(depthMapUrl) {
   }
 
   ctx.drawImage(image, 0, 0)
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  let { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  
+  // 边缘柔化处理
+  data = softenEdges(data, canvas.width, canvas.height)
+  
   return {
     pixels: data,
     width: canvas.width,
@@ -643,7 +782,7 @@ export default function App() {
   const [aiPrompt, setAiPrompt] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [isDepthGenerating, setIsDepthGenerating] = useState(false)
-  const [embossHeight, setEmbossHeight] = useState([5])
+  const [embossHeight, setEmbossHeight] = useState([4])
   const [embossSize, setEmbossSize] = useState([60])
   const [reliefRotation, setReliefRotation] = useState(0)
   const [depthVersion, setDepthVersion] = useState(0)
@@ -699,7 +838,19 @@ export default function App() {
 
   const [isLoading, setIsLoading] = useState(false)
 
+  // 检查是否选择了手机型号
+  const checkPhoneModel = () => {
+    if (!phoneModel) {
+      alert("请先选择手机型号")
+      return false
+    }
+    return true
+  }
+
   const handleAiGenerate = async () => {
+    // 检查是否选择了手机型号
+    if (!checkPhoneModel()) return
+    
     try {
       console.log("开始 AI 生成，prompt:", aiPrompt)
       
@@ -722,6 +873,9 @@ export default function App() {
   }
 
   const handleGenerate3D = async () => {
+    // 检查是否选择了手机型号
+    if (!checkPhoneModel()) return
+    
     console.log("开始生成")
     try {
       setIsLoading(true)
@@ -767,6 +921,9 @@ export default function App() {
   }, [])
 
   const handleExportSTL = async () => {
+    // 检查是否选择了手机型号
+    if (!checkPhoneModel()) return
+    
     if (!depthUrl) {
       alert("请先生成深度图后再导出 STL")
       return
@@ -868,7 +1025,11 @@ export default function App() {
                 onAiGenerate={handleAiGenerate}
                 isGenerating={isLoading}
                 isDepthGenerating={isLoading}
+                phoneModel={phoneModel}
                 onHistoryImageSelect={async (image) => {
+                  // 检查是否选择了手机型号
+                  if (!checkPhoneModel()) return
+                  
                   try {
                     setIsLoading(true)
                     // 直接使用已有的深度图，不需要重新推理
@@ -886,14 +1047,16 @@ export default function App() {
                 }}
               />
               <div className="h-px bg-border/40" />
-              <EmbossParameters
-                height={embossHeight}
-                size={embossSize}
-                rotation={reliefRotation}
-                onHeightChange={setEmbossHeight}
-                onSizeChange={setEmbossSize}
-                onRotationChange={setReliefRotation}
-              />
+              {isGenerated && (
+                <EmbossParameters
+                  height={embossHeight}
+                  size={embossSize}
+                  rotation={reliefRotation}
+                  onHeightChange={setEmbossHeight}
+                  onSizeChange={setEmbossSize}
+                  onRotationChange={setReliefRotation}
+                />
+              )}
             </div>
 
             <div className="flex flex-col gap-2 border-t border-border/60 p-4">

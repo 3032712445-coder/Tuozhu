@@ -168,11 +168,16 @@ def run_depth(image_path: str, out_path: str):
 
         # ========= 1. 归一化 (0~1) =========
         depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
+        
+        # ========= 2. 非线性对比度增强（针对细节） =========
+        # 使用小于 1.0 的指数可以增强暗部细节（低起伏纹理）
+        gamma = 0.8
+        depth = np.power(depth, gamma)
 
-        # ========= 2. 反转深度图 (浅色=近) =========
+        # ========= 3. 反转深度图 (浅色=近) =========
         depth = 1.0 - depth
 
-        # ========= 3. 背景剔除 (Background Removal) =========
+        # ========= 4. 背景剔除 (Background Removal) =========
         # 使用 Otsu's 二值化找到前景/背景阈值
         # 先转为 0-255 uint8 计算阈值
         depth_u8_temp = (depth * 255).astype(np.uint8)
@@ -193,7 +198,7 @@ def run_depth(image_path: str, out_path: str):
             d_max = depth[mask].max()
             depth[mask] = (depth[mask] - d_min) / (d_max - d_min + 1e-6)
 
-        # ========= 4. 纹理细节叠加 (Texture Detail Enhancement) =========
+        # ========= 5. 纹理细节叠加 (Texture Detail Enhancement) =========
         # 提取原图的高频细节 (High-pass filter)
         gray_image = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
         
@@ -213,13 +218,13 @@ def run_depth(image_path: str, out_path: str):
         depth[mask] += high_pass[mask] * detail_weight
         depth = np.clip(depth, 0.0, 1.0)
 
-        # ========= 5. Gamma 拉伸 =========
+        # ========= 6. Gamma 拉伸 =========
         depth = np.power(depth, 0.6)   
 
-        # ========= 6. 最终输出转换 =========
+        # ========= 7. 最终输出转换 =========
         depth = (depth * 255.0).astype(np.uint8)
 
-        # ========= 7. 轻微平滑消除噪点 =========
+        # ========= 8. 轻微平滑消除噪点 =========
         depth = cv2.GaussianBlur(depth, (3, 3), 0)
 
         print(f"💾 正在保存结果到: {out_path}")

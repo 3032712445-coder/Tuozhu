@@ -197,13 +197,15 @@ function ReliefClippedMaterial({
   caseWidth, 
   caseHeight, 
   depthTexture, 
+  normalTexture, 
   maskTexture, 
   planeY, 
   maskLegalIsBlack = false
  }) {
   const matRef = useRef(null)
   const materialKey = useMemo(() => {
-    // 当maskTexture变化时，强制重新创建材质
+    // 只在深度纹理或掩码纹理变化时重新创建材质
+    // 法线纹理变化时不需要重新创建材质，只需要更新uniform
     return `${isGenerated}-${depthTexture?.id || 'null'}-${maskTexture?.id || 'null'}-${maskLegalIsBlack}`
   }, [isGenerated, depthTexture, maskTexture, maskLegalIsBlack])
 
@@ -217,46 +219,56 @@ function ReliefClippedMaterial({
     const mat = matRef.current
     if (!mat) return
     
-    // 实时计算scaleValue
+    // 实时计算scaleValue：调整模式时使用最低值，非调整模式时使用用户设置的值
     const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
-    const scaleValue = (scale / 10) * 5
+    const scaleValue = isAdjustMode ? 0 : (scale / 10) * 5
     
     const shader = mat.userData.shader
     if (shader) {
-      // 实时更新uIsAdjustMode uniform值
-      shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0
+      // 只在值变化时更新uniforms，减少不必要的更新
+      if (shader.uniforms.uIsAdjustMode.value !== (isAdjustMode ? 1.0 : 0.0)) {
+        shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0
+      }
       
-      // 确保其他uniforms也保持最新
-      shader.uniforms.uCaseWidth.value = caseWidth
-      shader.uniforms.uCaseHeight.value = caseHeight
-      shader.uniforms.uPlaneY.value = planeY
-      shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
+      if (shader.uniforms.uCaseWidth.value !== caseWidth) {
+        shader.uniforms.uCaseWidth.value = caseWidth
+      }
       
-      // 使用硬编码参数
-      shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY)
-      shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY)
-      shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY)
-      shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0)
-      shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0
+      if (shader.uniforms.uCaseHeight.value !== caseHeight) {
+        shader.uniforms.uCaseHeight.value = caseHeight
+      }
+      
+      if (shader.uniforms.uPlaneY.value !== planeY) {
+        shader.uniforms.uPlaneY.value = planeY
+      }
+      
+      if (shader.uniforms.uMaskLegalIsBlack.value !== (maskLegalIsBlack ? 1.0 : 0.0)) {
+        shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
+      }
       
       // 确保displacementMap相关的uniforms被正确更新
-      if (shader.uniforms.displacementMap) {
+      if (shader.uniforms.displacementMap && shader.uniforms.displacementMap.value !== depthTexture) {
         shader.uniforms.displacementMap.value = depthTexture
       }
-      if (shader.uniforms.displacementScale) {
+      
+      if (shader.uniforms.displacementScale && shader.uniforms.displacementScale.value !== scaleValue) {
         shader.uniforms.displacementScale.value = scaleValue
       }
-      if (shader.uniforms.displacementBias) {
-        shader.uniforms.displacementBias.value = 0
-      }
-      if (shader.uniforms.map) {
+      
+      if (shader.uniforms.map && shader.uniforms.map.value !== depthTexture) {
         shader.uniforms.map.value = depthTexture
       }
-      if (shader.uniforms.alphaMap) {
+      
+      if (shader.uniforms.alphaMap && shader.uniforms.alphaMap.value !== depthTexture) {
         shader.uniforms.alphaMap.value = depthTexture
       }
       
-      if (shader.uniforms.uMask) {
+      // 确保法线贴图被正确更新
+      if (shader.uniforms.normalMap && shader.uniforms.normalMap.value !== normalTexture) {
+        shader.uniforms.normalMap.value = normalTexture
+      }
+      
+      if (shader.uniforms.uMask && shader.uniforms.uMask.value !== maskTexture) {
         shader.uniforms.uMask.value = maskTexture
       }
     }
@@ -272,9 +284,9 @@ function ReliefClippedMaterial({
   }
   
   if (isGenerated && depthTexture) {
-    // 计算scaleValue
+    // 计算scaleValue：调整模式时使用最低值，非调整模式时使用用户设置的值
     const scale = Array.isArray(displacementScale) ? displacementScale[0] : displacementScale
-    const scaleValue = (scale / 10) * 5
+    const scaleValue = isAdjustMode ? 0 : (scale / 10) * 5
     
     return (
       <meshStandardMaterial
@@ -283,6 +295,8 @@ function ReliefClippedMaterial({
         map={depthTexture} // 显式绑定颜色贴图，这样即使置换不明显，也能看到图片
         displacementMap={depthTexture}
         alphaMap={depthTexture} 
+        normalMap={normalTexture} // 添加法线贴图
+        normalScale={new THREE.Vector2(1, 1)} // 法线强度
         displacementScale={scaleValue}
         displacementBias={0}
         onBeforeCompile={(shader) => {
@@ -321,6 +335,13 @@ function ReliefClippedMaterial({
           }
           if (shader.uniforms.alphaMap) {
             shader.uniforms.alphaMap.value = depthTexture;
+          }
+          // 确保法线贴图被正确设置
+          if (shader.uniforms.normalMap) {
+            shader.uniforms.normalMap.value = normalTexture;
+          }
+          if (shader.uniforms.normalScale) {
+            shader.uniforms.normalScale.value.set(1.0, 1.0); // 法线强度
           }
           
           if (maskTexture) {
@@ -531,6 +552,7 @@ function ReliefPlane({
   const SEGMENTS_H = 256
 
   const [depthTex, setDepthTex] = useState(null)
+  const [normalTex, setNormalTex] = useState(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [eraserRadius, setEraserRadius] = useState(5) // 默认擦除半径为5像素
   
@@ -746,6 +768,15 @@ function ReliefPlane({
             return eraserTex
           })
           
+          // 生成法线贴图
+          const initialNormalTex = generateNormalMap(canvas)
+          if (initialNormalTex) {
+            setNormalTex(prev => {
+              if (prev) prev.dispose()
+              return initialNormalTex
+            })
+          }
+          
           // 初始化撤销栈
           const initCtx = canvas.getContext('2d');
           const initialState = initCtx.getImageData(0, 0, canvas.width, canvas.height);
@@ -760,6 +791,11 @@ function ReliefPlane({
             if (prev) prev.dispose()
             return tex
           })
+          // 清理法线贴图
+          setNormalTex(prev => {
+            if (prev) prev.dispose()
+            return null
+          })
         }
       },
       undefined,
@@ -768,6 +804,11 @@ function ReliefPlane({
         if (isMounted) {
           setPlaneDims({ w: 7, h: 7 })
           setDepthTex(prev => {
+            if (prev) prev.dispose()
+            return null
+          })
+          // 清理法线贴图
+          setNormalTex(prev => {
             if (prev) prev.dispose()
             return null
           })
@@ -789,6 +830,11 @@ function ReliefPlane({
         eraserCanvasRef.current = null
       }
       eraserContextRef.current = null
+      // 清理法线贴图
+      setNormalTex(prev => {
+        if (prev) prev.dispose()
+        return null
+      })
     }
   }, [depthMapUrl, depthVersion, maskLegalIsBlack])
 
@@ -797,6 +843,103 @@ function ReliefPlane({
         // Parent callback if needed
     }
   }, [onEraserDraw])
+
+  // 从深度图生成法线贴图
+  const generateNormalMap = (canvas) => {
+    if (!canvas) return null
+    
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    
+    const width = canvas.width
+    const height = canvas.height
+    const imageData = ctx.getImageData(0, 0, width, height)
+    const data = imageData.data
+    
+    // 创建法线贴图Canvas
+    const normalCanvas = document.createElement('canvas')
+    normalCanvas.width = width
+    normalCanvas.height = height
+    const normalCtx = normalCanvas.getContext('2d')
+    const normalData = normalCtx.createImageData(width, height)
+    const normalPixels = normalData.data
+    
+    // 深度图转法线图的参数
+    const scale = 1.0 // 法线强度
+    const step = 1 // 采样步长
+    
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const index = (y * width + x) * 4
+        
+        // 获取当前像素和相邻像素的深度值
+        const depth = data[index] / 255.0
+        const depthRight = (x < width - step) ? data[(y * width + x + step) * 4] / 255.0 : depth
+        const depthDown = (y < height - step) ? data[((y + step) * width + x) * 4] / 255.0 : depth
+        
+        // 计算法线
+        const dx = (depth - depthRight) * scale
+        const dy = (depth - depthDown) * scale
+        const dz = 1.0 / scale
+        
+        // 归一化
+        const length = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        const nx = (dx / length + 1.0) / 2.0
+        const ny = (dy / length + 1.0) / 2.0
+        const nz = (dz / length + 1.0) / 2.0
+        
+        // 存储法线到像素数据（RGB对应XYZ）
+        normalPixels[index] = Math.round(nx * 255)
+        normalPixels[index + 1] = Math.round(ny * 255)
+        normalPixels[index + 2] = Math.round(nz * 255)
+        normalPixels[index + 3] = 255 // 完全不透明
+      }
+    }
+    
+    normalCtx.putImageData(normalData, 0, 0)
+    
+    // 创建法线纹理
+    const normalTex = new THREE.CanvasTexture(normalCanvas)
+    normalTex.colorSpace = THREE.NoColorSpace
+    normalTex.minFilter = THREE.LinearFilter
+    normalTex.magFilter = THREE.LinearFilter
+    normalTex.generateMipmaps = false
+    normalTex.wrapS = normalTex.wrapT = THREE.ClampToEdgeWrapping
+    normalTex.needsUpdate = true
+    
+    return normalTex
+  }
+
+  // 添加防抖函数，减少法线贴图生成频率
+  const debounce = (func, wait) => {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  };
+
+  // 防抖处理的法线贴图生成函数
+  const debouncedGenerateNormalMap = useCallback(
+    debounce((canvas) => {
+      if (!canvas) return;
+      const newNormalTex = generateNormalMap(canvas);
+      if (newNormalTex) {
+        setNormalTex(prev => {
+          if (prev) prev.dispose();
+          return newNormalTex;
+        });
+      }
+    }, 100), // 100ms的防抖延迟
+    []
+  );
+
+  // 跟踪上一次擦除的位置，避免重复更新
+  const lastErasePosRef = useRef(null);
 
   const drawEraser = (uv) => {
     const canvas = eraserCanvasRef.current
@@ -811,6 +954,13 @@ function ReliefPlane({
     // 使用用户可调整的擦除半径
     const radius = eraserRadius
 
+    // 检查是否与上一次擦除位置相同，避免重复更新
+    const posKey = `${Math.round(x)}-${Math.round(y)}-${radius}`;
+    if (lastErasePosRef.current === posKey) {
+      return;
+    }
+    lastErasePosRef.current = posKey;
+
     ctx.globalCompositeOperation = "source-over"
     ctx.fillStyle = "black" 
     
@@ -819,8 +969,10 @@ function ReliefPlane({
     ctx.fill()
     
     // 为了减少卡顿，只在必要时更新纹理
-    // 可以考虑添加节流或防抖处理
     tex.needsUpdate = true
+    
+    // 防抖更新法线贴图
+    debouncedGenerateNormalMap(canvas)
   }
 
   // 辅助函数：保存当前状态到撤销栈
@@ -870,6 +1022,16 @@ function ReliefPlane({
     const lastState = undoStack.current.pop();
     ctx.putImageData(lastState, 0, 0);
     tex.needsUpdate = true;
+    
+    // 直接生成并更新法线贴图（撤销/前溯操作不需要防抖）
+    const newNormalTex = generateNormalMap(canvas);
+    if (newNormalTex) {
+      setNormalTex(prev => {
+        if (prev) prev.dispose();
+        return newNormalTex;
+      });
+    }
+    
     // 更新栈长度状态
     setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
     console.log('handleUndo: undo completed, new undo stack length:', undoStack.current.length);
@@ -895,6 +1057,16 @@ function ReliefPlane({
     const nextState = redoStack.current.pop();
     ctx.putImageData(nextState, 0, 0);
     tex.needsUpdate = true;
+    
+    // 直接生成并更新法线贴图（撤销/前溯操作不需要防抖）
+    const newNormalTex = generateNormalMap(canvas);
+    if (newNormalTex) {
+      setNormalTex(prev => {
+        if (prev) prev.dispose();
+        return newNormalTex;
+      });
+    }
+    
     // 更新栈长度状态
     setStackLengths({ undo: undoStack.current.length, redo: redoStack.current.length });
     console.log('handleRedo: redo completed, new redo stack length:', redoStack.current.length);
@@ -1075,6 +1247,7 @@ function ReliefPlane({
           caseWidth={caseWidth}
           caseHeight={caseHeight}
           depthTexture={depthTex}
+          normalTexture={normalTex}
           depthMapUrl={depthMapUrl}
           maskTexture={maskTexture}
           maskLegalIsBlack={maskLegalIsBlack}

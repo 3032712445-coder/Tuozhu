@@ -54,17 +54,20 @@ export function PreviewPanel({
               {isEraserMode ? "退出擦除" : "擦除"}
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => {
-                // 如果退出调整模式，强制退出擦除模式
-                if (isAdjustMode) setIsEraserMode(false)
-                onAdjustModeToggle()
-            }}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            {isAdjustMode ? "完成调整" : "调整位置"}
-          </button>
+          {/* 只有在浮雕生成后才显示调整位置按钮 */}
+          {isGenerated && (
+            <button
+              type="button"
+              onClick={() => {
+                  // 如果退出调整模式，强制退出擦除模式
+                  if (isAdjustMode) setIsEraserMode(false)
+                  onAdjustModeToggle()
+              }}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {isAdjustMode ? "完成调整" : "调整位置"}
+            </button>
+          )}
         </div>
       </div>
       <div className="flex-1 min-h-[360px] rounded bg-muted/50 overflow-hidden relative">
