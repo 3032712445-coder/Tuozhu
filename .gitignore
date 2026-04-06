@@ -28,9 +28,13 @@ __pycache__/
 .env
 pixel-perfect-depth/
 backend/depth_service/pixel-perfect-depth/*
-# runtime files
-backend/depth_service/outputs/*
+# 忽略上传和输出目录中的所有内容
 backend/depth_service/uploads/*
+backend/depth_service/outputs/*
+
+# 但保留 .gitkeep 文件
+!backend/depth_service/uploads/.gitkeep
+!backend/depth_service/outputs/.gitkeep
 __pycache__/
 *.pyc
 
