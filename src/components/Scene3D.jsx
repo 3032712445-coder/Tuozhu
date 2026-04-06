@@ -379,13 +379,41 @@ function EraserCapturePlane({
   scale,
   width,
   height,
-  eraserRadius
+  eraserRadius,
+  reliefRotation,
+  imageSize
 }) {
   const cursorCircleRef = useRef(null)
   const mousePosRef = useRef({ x: 0, y: 0 })
   const lastUvRef = useRef(null)
+  const rotTargetRef = useRef(0)
+  
+  useEffect(() => {
+    rotTargetRef.current = (reliefRotation * Math.PI) / 180
+  }, [reliefRotation])
+
+  useFrame(() => {
+    if (!cursorCircleRef.current || !isEraserMode) return
+    const circle = cursorCircleRef.current
+    // 保持红圈与捕捉平面相同的旋转
+    // 由于捕捉平面已经旋转，红圈作为其子元素会继承旋转
+    // 但这里我们直接设置红圈的旋转，确保它与捕捉平面一致
+    circle.rotation.set(-Math.PI / 2, 0, -rotTargetRef.current)
+  })
   
   if (!isEraserMode) return null
+
+  // 计算实际的擦除半径，根据图片大小动态调整
+  const getActualEraserRadius = () => {
+    // 基础参考尺寸
+    const referenceSize = 1024
+    // 获取图片的最大维度
+    const maxImageSize = Math.max(imageSize.width, imageSize.height)
+    // 计算比例
+    const scaleFactor = maxImageSize / referenceSize
+    // 根据比例调整擦除半径
+    return eraserRadius * scaleFactor
+  }
 
   // 计算两个UV点之间的距离
   const distanceBetweenUvs = (uv1, uv2) => {
@@ -415,9 +443,17 @@ function EraserCapturePlane({
     if (!uv) return
     
     // 计算模型空间中的位置
-    const x = (uv.x - 0.5) * width * scale + reliefPosition.x
-    // 修正纵向坐标，使用 (1 - uv.y) 来确保与鼠标位置一致
-    const z = (1 - uv.y - 0.5) * height * scale + reliefPosition.y
+    // 首先计算相对于平面中心的本地坐标
+    const localX = (uv.x - 0.5) * width * scale
+    const localZ = (1 - uv.y - 0.5) * height * scale
+    
+    // 应用旋转
+    const rotation = -rotTargetRef.current
+    const cosR = Math.cos(rotation)
+    const sinR = Math.sin(rotation)
+    
+    const x = localX * cosR - localZ * sinR + reliefPosition.x
+    const z = localX * sinR + localZ * cosR + reliefPosition.y
     
     // 更新鼠标位置
     mousePosRef.current = { x, y: z }
@@ -441,7 +477,8 @@ function EraserCapturePlane({
       
       // 根据距离确定需要生成的中间点数量
       // 确保两点之间的距离不超过擦除半径的一半
-      const eraserRadiusUv = eraserRadius / 1024 // 转换为UV坐标下的半径
+      const actualEraserRadius = getActualEraserRadius()
+      const eraserRadiusUv = actualEraserRadius / Math.max(imageSize.width, imageSize.height) // 转换为UV坐标下的半径
       const steps = Math.max(1, Math.ceil(distance / (eraserRadiusUv / 2)))
       
       // 生成中间点
@@ -465,7 +502,7 @@ function EraserCapturePlane({
       {/* 捕获平面 */}
       <mesh
         position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.01, reliefPosition.y]}
-        rotation={[-Math.PI / 2, 0, 0]}
+        rotation={[-Math.PI / 2, 0, rotTargetRef.current]}
         scale={[scale, scale, 1]}
         onPointerDown={(e) => {
             e.stopPropagation()
@@ -508,13 +545,12 @@ function EraserCapturePlane({
       <mesh 
         ref={cursorCircleRef} 
         visible={isEraserMode}
-        rotation={[-Math.PI / 2, 0, 0]}
+        rotation={[-Math.PI / 2, 0, -rotTargetRef.current]}
         position={[reliefPosition.x, planeY + RELIEF_OFFSET + 0.06, reliefPosition.y]}
       >
         {/* 动态调整圆圈大小，与擦除半径保持一致 */}
-        {/* 计算方法：(eraserRadius / canvasWidth) * planeWidth * scale */}
-        {/* 假设canvasWidth为1024，planeWidth为width */}
-        <circleGeometry args={[(eraserRadius / 1024) * width * scale, 32]} />
+        {/* 计算方法：(actualEraserRadius / canvasWidth) * planeWidth * scale */}
+        <circleGeometry args={[(getActualEraserRadius() / Math.max(imageSize.width, imageSize.height)) * width * scale, 32]} />
         <meshBasicMaterial 
           color="rgba(255, 0, 0, 0.5)" 
           transparent 
@@ -555,6 +591,7 @@ function ReliefPlane({
   const [normalTex, setNormalTex] = useState(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [eraserRadius, setEraserRadius] = useState(5) // 默认擦除半径为5像素
+  const [imageSize, setImageSize] = useState({ width: 1024, height: 1024 }) // 默认图片尺寸
   
   // 撤销和前溯功能 - 使用useRef存储历史记录
   const undoStack = useRef([]);
@@ -740,6 +777,8 @@ function ReliefPlane({
           const aspect = img.width / img.height
           const baseH = 7
           setPlaneDims({ w: baseH * aspect, h: baseH })
+          // 更新图片尺寸状态
+          setImageSize({ width: img.width, height: img.height })
           
           // 创建临时Canvas用于擦除操作
           const canvas = document.createElement('canvas')
@@ -951,8 +990,11 @@ function ReliefPlane({
     const x = uv.x * canvas.width
     const y = (1.0 - uv.y) * canvas.height
     
-    // 使用用户可调整的擦除半径
-    const radius = eraserRadius
+    // 计算实际的擦除半径，根据图片大小动态调整
+    const referenceSize = 1024
+    const maxImageSize = Math.max(imageSize.width, imageSize.height)
+    const scaleFactor = maxImageSize / referenceSize
+    const radius = eraserRadius * scaleFactor
 
     // 检查是否与上一次擦除位置相同，避免重复更新
     const posKey = `${Math.round(x)}-${Math.round(y)}-${radius}`;
@@ -1088,7 +1130,7 @@ function ReliefPlane({
     const m = meshRef.current
     m.rotation.x = -Math.PI / 2
     m.rotation.y = 0
-    m.rotation.z = THREE.MathUtils.lerp(m.rotation.z, -rotTargetRef.current, 0.1)
+    m.rotation.z = THREE.MathUtils.lerp(m.rotation.z, rotTargetRef.current, 0.1)
   })
 
   useEffect(() => {
@@ -1264,6 +1306,8 @@ function ReliefPlane({
         height={planeDims.h}
         eraserRadius={eraserRadius}
         onEraserDraw={onEraserInteraction}
+        reliefRotation={reliefRotation}
+        imageSize={imageSize}
       />
     </>
   )
