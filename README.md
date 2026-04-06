@@ -88,7 +88,7 @@
   pip install fastapi uvicorn pillow numpy opencv-python torch torchvision
   ```
 
- 3.下载仓库为https://github.com/gangweix/pixel-perfect-depth，
+ 3.下载仓库为https://github.com/gangweix/pixel-perfect-depth ，
   在他们的Readme里找到：![alt text](image.png)
   按Usage-Preparation里的步骤下载好 ppd.pth和depth_anything_v2_vitl.pth模型权重并放到checkpoints文件夹
   形成目录backend/depth_service/pixel-perfect-depth/checkpoints/
