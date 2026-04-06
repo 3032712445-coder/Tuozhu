@@ -241,18 +241,17 @@ def run_depth(image_path: str, out_path: str):
             depth, _ = model.infer_image(image_resized) 
             print("✅ 模型推理返回结果")
 
-            # 如果尺寸有微调，插值回原始尺寸
-            if patch_h != H or patch_w != W:
-                print("🔄 正在将深度图插值回原图尺寸...")
-                depth = F.interpolate(
-                    depth,
-                    size=(H, W),
-                    mode="bilinear",
-                    align_corners=False
-                )[0, 0]
-            else:
-                depth = depth[0, 0]
-                
+            # infer_image 内部会 resize_keep_aspect（约 1024×768 量级），深度图分辨率未必等于
+            # 传入的 image_resized，更不等于原图 (H,W)。必须始终插值到原图尺寸，才能与后续
+            # gray_image / mask 对齐。
+            print("🔄 正在将深度图插值到原图尺寸...")
+            depth = F.interpolate(
+                depth,
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+
             print("✅ 尺寸调整完成")
 
         depth = depth.cpu().numpy()
@@ -291,10 +290,11 @@ def run_depth(image_path: str, out_path: str):
 
         # ========= 5. 纹理细节叠加 (Texture Detail Enhancement) =========
         # 提取原图的高频细节 (High-pass filter)
-        gray_image = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        # 使用原始图像来提取高频细节，确保尺寸与depth一致
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # 调整 gray_image 尺寸以匹配 depth (如果之前有 resize/interpolate)
-        # 这里 depth 已经是 H, W 了，gray_image 也是 H, W
+        # 确保 gray_image 尺寸与 depth 一致
+        gray_image = cv2.resize(gray_image, (W, H))
         gray_image = gray_image.astype(np.float32) / 255.0
         
         # 使用高斯模糊提取低频，原图减去低频得到高频

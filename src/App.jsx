@@ -490,9 +490,16 @@ async function buildCombinedMesh({
     const rawIdx = keptFaces[i]
     if (vertexMap[rawIdx] === -1) {
       vertexMap[rawIdx] = keptVertexCount
+      const lx = posAttrRaw.getX(rawIdx)
+      const ly = posAttrRaw.getY(rawIdx)
+      
+      // 应用旋转到顶点位置
+      const x_rot = lx * cosR - ly * sinR
+      const y_rot = lx * sinR + ly * cosR
+      
       topVertices.push(
-        posAttrRaw.getX(rawIdx),
-        posAttrRaw.getY(rawIdx),
+        x_rot + reliefPosition.x,
+        y_rot + reliefPosition.y,
         vertexDisp[rawIdx] + bottomOffset
       )
       topUvs.push(uvsRaw.getX(rawIdx), uvsRaw.getY(rawIdx))
@@ -504,6 +511,7 @@ async function buildCombinedMesh({
   const finalVertices = new Float32Array(keptVertexCount * 3 * 2)
   const bottomVertices =[]
   for(let i=0; i<keptVertexCount; i++) {
+    // 底面顶点使用与顶面相同的x和y坐标，只改变z坐标
     bottomVertices.push(topVertices[i*3], topVertices[i*3+1], baseZ)
   }
   finalVertices.set(topVertices, 0)
