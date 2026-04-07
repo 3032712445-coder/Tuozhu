@@ -14,16 +14,40 @@ console.log("🔥 App.jsx in src running")
 
 const DEFAULT_PHONE_W = 7
 const DEFAULT_PHONE_H = 14
-const IPHONE16_MASK_CONFIG = {
-  scaleX: 1.40,
-  scaleY: 1.05,
-  offsetX: 0.0,
-  offsetY: 0.0,
-  translateX: 0.15,
-  translateY: -0.15,
-  flipX: false,
-  flipY: false,
-  rotDeg: 0.0
+const MASK_CONFIGS = {
+  iphone16: {
+    scaleX: 1.40,
+    scaleY: 1.05,
+    offsetX: 0.0,
+    offsetY: 0.0,
+    translateX: 0.15,
+    translateY: -0.15,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  },
+  iphone16pro: {
+    scaleX: 1.0,
+    scaleY: 1.026,
+    offsetX: 0.0,
+    offsetY: 0.0,
+    translateX: 0.0,
+    translateY: 0.0,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  },
+  iphone16promax: {
+    scaleX: 1.0,
+    scaleY: 1.0,
+    offsetX: 0.0,
+    offsetY: 0.0,
+    translateX: 0.0,
+    translateY: 0.0,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  }
 }
 
 function getEmbossScaleValue(embossHeight) {
@@ -34,6 +58,19 @@ function getEmbossScaleValue(embossHeight) {
 function getReliefSizeScale(embossSize) {
   const sizeVal = Array.isArray(embossSize) ? embossSize[0] : embossSize
   return 0.3 + ((sizeVal - 20) / 180) * 2.2
+}
+
+function smoothstep01(x) {
+  const t = Math.max(0, Math.min(1, x))
+  return t * t * (3 - 2 * t)
+}
+
+const PREVIEW_DEPTH_PROFILE = {
+  centerWeight: 0.70,
+  axisWeight: 0.05,
+  diagWeight: 0.025,
+  detailBoost: 0.75,
+  outputGamma: 0.92,
 }
 
 function sampleGrayBilinear(pixels, width, height, u, v) {
@@ -69,6 +106,59 @@ function sampleGrayBilinear(pixels, width, height, u, v) {
   const val = (top * (1 - ty) + bottom * ty) / 255
   
   return Number.isFinite(val) ? val : 0.0
+}
+
+function sampleGrayMultidir(pixels, width, height, u, v) {
+  const du = 1 / Math.max(1, width - 1)
+  const dv = 1 / Math.max(1, height - 1)
+  const wCenter = 0.4
+  const wAxis = 0.1
+  const wDiag = 0.05
+  let sum = 0
+  let wsum = 0
+
+  const add = (su, sv, w) => {
+    const val = sampleGrayBilinear(pixels, width, height, su, sv)
+    sum += val * w
+    wsum += w
+  }
+
+  add(u, v, wCenter)
+  add(u + du, v, wAxis)
+  add(u - du, v, wAxis)
+  add(u, v + dv, wAxis)
+  add(u, v - dv, wAxis)
+  add(u + du, v + dv, wDiag)
+  add(u + du, v - dv, wDiag)
+  add(u - du, v + dv, wDiag)
+  add(u - du, v - dv, wDiag)
+
+  if (wsum <= 0) return 0
+  return sum / wsum
+}
+
+function sampleDepthLikePreview(pixels, width, height, u, v) {
+  const du = 1 / Math.max(1, width - 1)
+  const dv = 1 / Math.max(1, height - 1)
+
+  const d0 = sampleGrayBilinear(pixels, width, height, u, v)
+  const d1 = sampleGrayBilinear(pixels, width, height, u + du, v)
+  const d2 = sampleGrayBilinear(pixels, width, height, u - du, v)
+  const d3 = sampleGrayBilinear(pixels, width, height, u, v + dv)
+  const d4 = sampleGrayBilinear(pixels, width, height, u, v - dv)
+  const d5 = sampleGrayBilinear(pixels, width, height, u + du, v + dv)
+  const d6 = sampleGrayBilinear(pixels, width, height, u + du, v - dv)
+  const d7 = sampleGrayBilinear(pixels, width, height, u - du, v + dv)
+  const d8 = sampleGrayBilinear(pixels, width, height, u - du, v - dv)
+
+  // 与 Scene3D 预览 shader 对齐：轻平滑 + 高频细节增强
+  const depthBlur = d0 * PREVIEW_DEPTH_PROFILE.centerWeight
+    + (d1 + d2 + d3 + d4) * PREVIEW_DEPTH_PROFILE.axisWeight
+    + (d5 + d6 + d7 + d8) * PREVIEW_DEPTH_PROFILE.diagWeight
+  const detail = d0 - depthBlur
+  const depthRaw = Math.max(0, Math.min(1, depthBlur + detail * PREVIEW_DEPTH_PROFILE.detailBoost))
+  const depthSmooth = smoothstep01(depthRaw)
+  return Math.pow(depthSmooth, PREVIEW_DEPTH_PROFILE.outputGamma)
 }
 
 // 边缘柔化处理函数
@@ -234,8 +324,6 @@ async function loadDepthImageData(depthMapUrl) {
 
   ctx.drawImage(image, 0, 0)
   let { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  
-  // 边缘柔化处理
   data = softenEdges(data, canvas.width, canvas.height)
   
   return {
@@ -260,6 +348,17 @@ async function loadMaskData(model) {
     canvas.width = image.width
     canvas.height = image.height
     const ctx = canvas.getContext("2d")
+    
+    // 除了iPhone 16以外的模型的掩码图旋转180度
+    if (model !== "iphone16") {
+      // 移动原点到画布中心
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      // 旋转180度
+      ctx.rotate(Math.PI)
+      // 移动回原点
+      ctx.translate(-canvas.width / 2, -canvas.height / 2)
+    }
+    
     ctx.drawImage(image, 0, 0)
     const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
     return { pixels: data, width, height }
@@ -269,7 +368,7 @@ async function loadMaskData(model) {
   }
 }
 
-async function loadAndPrepareSTL(phoneModel) {
+async function loadAndPrepareSTL(phoneModel, useOriginalSize = false) {
   const loader = new STLLoader()
   const geometry = await new Promise((resolve, reject) => {
     loader.load(
@@ -280,18 +379,27 @@ async function loadAndPrepareSTL(phoneModel) {
     )
   })
 
-  // 1. 旋转与缩放（复用 Scene3D 中的逻辑）
+  // 1. 旋转（复用 Scene3D 中的逻辑）
   geometry.rotateX(Math.PI / 2)
-  geometry.computeBoundingBox()
-  const size0 = new THREE.Vector3()
-  geometry.boundingBox.getSize(size0)
   
-  const targetW = DEFAULT_PHONE_W
-  const targetH = DEFAULT_PHONE_H
-  const scaleFactor = Math.min(targetW / (size0.x || 1), targetH / (size0.z || 1))
-  geometry.scale(scaleFactor, scaleFactor, scaleFactor)
+  // 除了iPhone 16以外的模型绕Y轴旋转180度
+  if (phoneModel !== "iphone16") {
+    geometry.rotateY(Math.PI)
+  }
   
-  // 2. 居中与归零
+  // 2. 缩放（仅在非原始尺寸模式下）
+  if (!useOriginalSize) {
+    geometry.computeBoundingBox()
+    const size0 = new THREE.Vector3()
+    geometry.boundingBox.getSize(size0)
+    
+    const targetW = DEFAULT_PHONE_W
+    const targetH = DEFAULT_PHONE_H
+    const scaleFactor = Math.min(targetW / (size0.x || 1), targetH / (size0.z || 1))
+    geometry.scale(scaleFactor, scaleFactor, scaleFactor)
+  }
+  
+  // 3. 居中与归零
   geometry.computeBoundingBox()
   const bb = geometry.boundingBox
   const center = new THREE.Vector3()
@@ -309,34 +417,37 @@ async function loadAndPrepareSTL(phoneModel) {
 }
 
 // 检查点是否在掩模的非法区域（孔洞）
-function isPointInMask(x, z, maskData, caseWidth, caseHeight) {
+function isPointInMask(x, z, maskData, caseWidth, caseHeight, phoneModel, previewToRawScale = 1) {
   if (!maskData) return false // 无掩模则认为全部合法
+  
+  // 获取当前手机型号的掩码配置，默认为iPhone 16的配置
+  const maskConfig = MASK_CONFIGS[phoneModel] || MASK_CONFIGS.iphone16
   
   // 1. 将世界坐标 (x, z) 转换为相对于中心 (0,0) 的局部坐标
   // 此时 x, z 已经是相对于手机壳中心的坐标
   
   // 2. 应用平移（逆向操作）
-  let wx = x - IPHONE16_MASK_CONFIG.translateX
-  let wy = z - IPHONE16_MASK_CONFIG.translateY // 注意：3D中的z对应2D中的y
+  let wx = x - (maskConfig.translateX * previewToRawScale)
+  let wy = z - (maskConfig.translateY * previewToRawScale) // 注意：3D中的z对应2D中的y
   
   // 3. 应用旋转（逆向操作）
-  const rot = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180
+  const rot = maskConfig.rotDeg * Math.PI / 180
   const c = Math.cos(rot)
   const s = Math.sin(rot)
   const rx = wx * c - wy * s
   const ry = wx * s + wy * c
   
   // 4. 归一化到 UV [0, 1]
-  let u = rx / (caseWidth * IPHONE16_MASK_CONFIG.scaleX) + 0.5
-  let v = ry / (caseHeight * IPHONE16_MASK_CONFIG.scaleY) + 0.5
+  let u = rx / (caseWidth * maskConfig.scaleX) + 0.5
+  let v = ry / (caseHeight * maskConfig.scaleY) + 0.5
   
   // 5. 应用镜像
-  if (IPHONE16_MASK_CONFIG.flipX) u = 1.0 - u
-  if (IPHONE16_MASK_CONFIG.flipY) v = 1.0 - v
+  if (maskConfig.flipX) u = 1.0 - u
+  if (maskConfig.flipY) v = 1.0 - v
   
   // 6. 应用偏移（减法，与 Shader 一致）
-  u = u - IPHONE16_MASK_CONFIG.offsetX
-  v = v - IPHONE16_MASK_CONFIG.offsetY
+  u = u - maskConfig.offsetX
+  v = v - maskConfig.offsetY
   
   // 7. 采样掩模
   if (u < 0 || u > 1 || v < 0 || v > 1) return true // 超出掩模范围视为非法
@@ -381,10 +492,10 @@ async function buildCombinedMesh({
     }
   }
   
-  // 1. 加载手机壳基底模型
+  // 1. 加载手机壳基底模型（使用原始尺寸）
   let caseGeometry
   try {
-    caseGeometry = await loadAndPrepareSTL(phoneModel)
+    caseGeometry = await loadAndPrepareSTL(phoneModel, true)
     console.log("Loaded case geometry", caseGeometry)
   } catch (e) {
     console.error("Failed to load STL", e)
@@ -397,6 +508,12 @@ async function buildCombinedMesh({
   caseGeometry.boundingBox.getSize(caseSize)
   const caseWidth = caseSize.x
   const caseHeight = caseSize.z
+  // 预览中手机壳会被统一缩放到约 7x14 的工作空间；导出用原始尺寸时，需反向映射参数
+  const previewScale = Math.min(
+    DEFAULT_PHONE_W / (caseWidth || 1),
+    DEFAULT_PHONE_H / (caseHeight || 1)
+  )
+  const previewToRawScale = previewScale > 0 ? (1 / previewScale) : 1
   
   // 2. 加载掩模数据
   const maskData = await loadMaskData(phoneModel)
@@ -404,9 +521,17 @@ async function buildCombinedMesh({
   // 3. 生成浮雕几何体 (采用水密包裹算法 Watertight Algorithm)
   const depthAspect = depthWidth / depthHeight
   const reliefScale = getReliefSizeScale(embossSize)
-  const reliefHeightInScene = 7 * reliefScale
-  const reliefWidthInScene = 7 * depthAspect * reliefScale
-  const maxEmbossHeight = getEmbossScaleValue(embossHeight)
+  
+  // 保持与预览一致的“相对尺寸语义”，再映射到原始壳体尺寸
+  const reliefHeightInScene = 7 * reliefScale * previewToRawScale
+  const reliefWidthInScene = 7 * depthAspect * reliefScale * previewToRawScale
+  
+  // 高度参数也要映射到原始壳体尺度，避免出现“XY变大但Z没跟上”
+  const maxEmbossHeight = getEmbossScaleValue(embossHeight) * previewToRawScale
+  const reliefPosExport = {
+    x: reliefPosition.x * previewToRawScale,
+    y: reliefPosition.y * previewToRawScale,
+  }
   const rot = (reliefRotation * Math.PI) / 180
   const cosR = Math.cos(-rot)
   const sinR = Math.sin(-rot)
@@ -438,20 +563,20 @@ async function buildCombinedMesh({
     const u = (lx / reliefWidthInScene + 0.5)
     const v = (ly / reliefHeightInScene + 0.5)
 
-    const depth = sampleGrayBilinear(depthPixels, depthWidth, depthHeight, u, v)
-    let displacement = depth * maxEmbossHeight
+    const depthPreviewLike = sampleDepthLikePreview(depthPixels, depthWidth, depthHeight, u, v)
+    let displacement = depthPreviewLike * maxEmbossHeight
     if (!Number.isFinite(displacement)) displacement = 0
-    if (displacement < 0.05) displacement = 0 // 去除底噪
+    if (displacement < 0) displacement = 0
 
     const wx_rot = lx * cosR - ly * sinR
     const wz_rot = lx * sinR + ly * cosR
-    const wx = wx_rot + reliefPosition.x
-    const wz = wz_rot + reliefPosition.y
+    const wx = wx_rot + reliefPosExport.x
+    const wz = wz_rot + reliefPosExport.y
 
     const halfW = caseWidth / 2
     const halfH = caseHeight / 2
     const isOutsideCase = Math.abs(wx) > halfW || Math.abs(wz) > halfH
-    const isHole = isPointInMask(wx, wz, maskData, caseWidth, caseHeight)
+    const isHole = isPointInMask(wx, wz, maskData, caseWidth, caseHeight, phoneModel, previewToRawScale)
 
     if (isOutsideCase || isHole) {
       vertexValid[i] = 0
@@ -498,8 +623,8 @@ async function buildCombinedMesh({
       const y_rot = lx * sinR + ly * cosR
       
       topVertices.push(
-        x_rot + reliefPosition.x,
-        y_rot + reliefPosition.y,
+        x_rot + reliefPosExport.x,
+        y_rot + reliefPosExport.y,
         vertexDisp[rawIdx] + bottomOffset
       )
       topUvs.push(uvsRaw.getX(rawIdx), uvsRaw.getY(rawIdx))
@@ -580,7 +705,6 @@ async function buildCombinedMesh({
   reliefGeo.rotateX(-Math.PI / 2)
   reliefGeo.scale(1, 1, -1)
   reliefGeo.computeVertexNormals()
-  reliefGeo.translate(reliefPosition.x, 0, reliefPosition.y)
   reliefGeo.computeBoundingBox()
   
   reliefGeoRaw.dispose() // 释放缓存
@@ -644,13 +768,16 @@ async function buildCombinedMesh({
   const currentSize = new THREE.Vector3()
   mergedGeo.boundingBox.getSize(currentSize)
   
-  // 如果宽度小于 10 (大概率是 cm 或 m)，强制放大到 70-80mm 左右
+  // 注意：现在使用原始尺寸的手机壳模型，不再进行自动缩放
+  // 保留这段代码作为参考，以便在需要时重新启用
+  /*
   let scaleFactor = 1.0
   if (currentSize.x < 10.0) {
     scaleFactor = 75.0 / currentSize.x
     console.log(`Auto-scaling mesh by factor ${scaleFactor} to match mm units`)
     mergedGeo.scale(scaleFactor, scaleFactor, scaleFactor)
   }
+  */
   
   // 2. 贴地处理 (Floor Alignment)
   // 缩放后重新计算包围盒

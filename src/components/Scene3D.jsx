@@ -1,6 +1,6 @@
 import { useRef, useMemo, useState, useCallback, useEffect } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
-import { OrbitControls } from "@react-three/drei"
+import { OrbitControls, Html } from "@react-three/drei"
 import * as THREE from "three"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 console.log("🔥 Scene3D from components loaded")
@@ -18,16 +18,40 @@ const RELIEF_Z_MIN = -DEFAULT_PHONE_H / 2 + 0.5
 const RELIEF_Z_MAX = DEFAULT_PHONE_H / 2 - 0.5
 
 // 硬编码掩模位置参数（校准后的结果）
-const IPHONE16_MASK_CONFIG = {
-  scaleX: 1.40,
-  scaleY: 1.05,
-  offsetX: 0.0,
-  offsetY: 0.0,
-  translateX: 0.15,
-  translateY: -0.15,
-  flipX: false,
-  flipY: false,
-  rotDeg: 0.0
+const MASK_CONFIGS = {
+  iphone16: {
+    scaleX: 1.40,
+    scaleY: 1.05,
+    offsetX: 0.0,
+    offsetY: 0.0,
+    translateX: 0.15,
+    translateY: -0.15,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  },
+  iphone16pro: {
+    scaleX: 1.028,
+    scaleY: 1.027,
+    offsetX: 0.0,
+    offsetY: 0.0,
+    translateX: -0.0167,
+    translateY: 0.0,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  },
+  iphone16promax: {
+    scaleX: 1.226,
+    scaleY: 1.11,
+    offsetX: 0.0,
+    offsetY: 0.015,
+    translateX: 0.062,
+    translateY: 0.06,
+    flipX: false,
+    flipY: false,
+    rotDeg: 0.0
+  }
 }
 
 function clampRelief(pos) {
@@ -38,6 +62,13 @@ function clampRelief(pos) {
 }
 
 const DEFAULT_DEPTH_MAP_URL = "http://localhost:8001/depth/latest"
+const PREVIEW_DEPTH_PROFILE = {
+  centerWeight: 0.70,
+  axisWeight: 0.05,
+  diagWeight: 0.025,
+  detailBoost: 0.75,
+  outputGamma: 0.92,
+}
 
 function SafeDisplacementMaterial({ displacementScale }) {
   const [texture, setTexture] = useState(null)
@@ -84,18 +115,23 @@ function SafeDisplacementMaterial({ displacementScale }) {
   )
 }
 
-const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack }) => {
+const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack, phoneModel }) => {
   // 确保所有uniforms都被正确初始化
   shader.uniforms.uIsAdjustMode = { value: isAdjustMode ? 1.0 : 0.0 }
   shader.uniforms.uCaseWidth = { value: caseWidth }
   shader.uniforms.uCaseHeight = { value: caseHeight }
   shader.uniforms.uPlaneY = { value: planeY }
   shader.uniforms.uMaskLegalIsBlack = { value: maskLegalIsBlack ? 1.0 : 0.0 }
-  shader.uniforms.uMaskScale = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY) }
-  shader.uniforms.uMaskOffset = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY) }
-  shader.uniforms.uMaskTranslate = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY) }
-  shader.uniforms.uMaskFlip = { value: new THREE.Vector2(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0) }
-  shader.uniforms.uMaskRotate = { value: IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0 }
+  
+  // 获取当前模型的掩码配置
+  const maskConfig = MASK_CONFIGS[phoneModel] || MASK_CONFIGS.iphone16
+  
+  shader.uniforms.uMaskScale = { value: new THREE.Vector2(maskConfig.scaleX, maskConfig.scaleY) }
+  shader.uniforms.uMaskOffset = { value: new THREE.Vector2(maskConfig.offsetX, maskConfig.offsetY) }
+  shader.uniforms.uMaskTranslate = { value: new THREE.Vector2(maskConfig.translateX, maskConfig.translateY) }
+  shader.uniforms.uMaskFlip = { value: new THREE.Vector2(maskConfig.flipX ? 1 : 0, maskConfig.flipY ? 1 : 0) }
+  shader.uniforms.uMaskRotate = { value: maskConfig.rotDeg * Math.PI / 180.0 }
+  shader.uniforms.uDepthTexel = { value: new THREE.Vector2(1 / 1024, 1 / 1024) }
   // 确保uMask uniform总是被初始化，即使maskTexture为null
   shader.uniforms.uMask = { value: maskTexture || null }
 
@@ -105,6 +141,7 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
   // 首先添加我们的varying变量声明
   // 我们需要确保这些声明在任何其他代码之前
   shader.vertexShader = `
+    uniform vec2 uDepthTexel;
     varying vec3 vLocalPosition;
     varying vec3 vWorldPosition;
     varying vec2 vUv;
@@ -125,8 +162,26 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
       // 只有当本地坐标 z > -0.005 时才应用位移（即只作用于顶面）
       if (position.z > -0.005) {
         vec3 vNormal = normalize( normal );
-        float fDisplacement = texture2D( displacementMap, uv ).x;
-        transformed += vNormal * ( fDisplacement * displacementScale + displacementBias );
+        vec2 du = vec2(uDepthTexel.x, 0.0);
+        vec2 dv = vec2(0.0, uDepthTexel.y);
+        float d0 = texture2D(displacementMap, uv).x;
+        float d1 = texture2D(displacementMap, uv + du).x;
+        float d2 = texture2D(displacementMap, uv - du).x;
+        float d3 = texture2D(displacementMap, uv + dv).x;
+        float d4 = texture2D(displacementMap, uv - dv).x;
+        float d5 = texture2D(displacementMap, uv + du + dv).x;
+        float d6 = texture2D(displacementMap, uv + du - dv).x;
+        float d7 = texture2D(displacementMap, uv - du + dv).x;
+        float d8 = texture2D(displacementMap, uv - du - dv).x;
+        // 先做轻度多方向平滑，再做局部高频增强，突出五官等细节
+        float depthBlur = d0 * ${PREVIEW_DEPTH_PROFILE.centerWeight}
+          + (d1 + d2 + d3 + d4) * ${PREVIEW_DEPTH_PROFILE.axisWeight}
+          + (d5 + d6 + d7 + d8) * ${PREVIEW_DEPTH_PROFILE.diagWeight};
+        float detail = d0 - depthBlur;
+        float depthRaw = clamp(depthBlur + detail * ${PREVIEW_DEPTH_PROFILE.detailBoost}, 0.0, 1.0);
+        float depthSmooth = depthRaw * depthRaw * (3.0 - 2.0 * depthRaw);
+        depthSmooth = pow(depthSmooth, ${PREVIEW_DEPTH_PROFILE.outputGamma});
+        transformed += vNormal * ( depthSmooth * displacementScale + displacementBias );
       }
     #endif
     `
@@ -146,6 +201,7 @@ const getClippedShader = (shader, { caseWidth, caseHeight, isAdjustMode, planeY,
     uniform vec2 uMaskTranslate;
     uniform vec2 uMaskFlip;
     uniform float uMaskRotate;
+    uniform vec2 uDepthTexel;
     varying vec3 vLocalPosition;
     varying vec3 vWorldPosition;
   ` + shader.fragmentShader.replace(
@@ -200,7 +256,8 @@ function ReliefClippedMaterial({
   normalTexture, 
   maskTexture, 
   planeY, 
-  maskLegalIsBlack = false
+  maskLegalIsBlack = false,
+  phoneModel
  }) {
   const matRef = useRef(null)
   const materialKey = useMemo(() => {
@@ -245,6 +302,12 @@ function ReliefClippedMaterial({
       if (shader.uniforms.uMaskLegalIsBlack.value !== (maskLegalIsBlack ? 1.0 : 0.0)) {
         shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0
       }
+
+      if (shader.uniforms.uDepthTexel) {
+        const w = depthTexture?.image?.width || 1024
+        const h = depthTexture?.image?.height || 1024
+        shader.uniforms.uDepthTexel.value.set(1 / Math.max(1, w), 1 / Math.max(1, h))
+      }
       
       // 确保displacementMap相关的uniforms被正确更新
       if (shader.uniforms.displacementMap && shader.uniforms.displacementMap.value !== depthTexture) {
@@ -276,10 +339,10 @@ function ReliefClippedMaterial({
 
   const commonProps = {
     ref: matRef,
-    color: "#c0c0c0", // 更亮的颜色，增强细节可见性
+    color: "#d8d8d8", // 略提亮，增强浅浮雕层次可见性
     side: DoubleSide,
-    roughness: 0.6, // 适当减少粗糙度，让光线更好地反射细节
-    metalness: 0.0, // 保持非金属感
+    roughness: 0.45, // 降低粗糙度，提升细节阴影对比
+    metalness: 0.02, // 极低金属度，提升高光但不金属化
     transparent: false, // 移除透明效果
   }
   
@@ -296,7 +359,7 @@ function ReliefClippedMaterial({
         displacementMap={depthTexture}
         alphaMap={depthTexture} 
         normalMap={normalTexture} // 添加法线贴图
-        normalScale={new THREE.Vector2(1, 1)} // 法线强度
+        normalScale={new THREE.Vector2(1.35, 1.35)} // 适度增强法线细节可见性
         displacementScale={scaleValue}
         displacementBias={0}
         onBeforeCompile={(shader) => {
@@ -304,7 +367,7 @@ function ReliefClippedMaterial({
           matRef.current.userData.shader = shader;
           
           // 应用我们的shader修改
-          getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack });
+          getClippedShader(shader, { caseWidth, caseHeight, isAdjustMode, planeY, maskTexture, maskLegalIsBlack, phoneModel });
           
           // 立即设置所有uniforms，确保shader编译后正确初始化
           shader.uniforms.uIsAdjustMode.value = isAdjustMode ? 1.0 : 0.0;
@@ -313,12 +376,18 @@ function ReliefClippedMaterial({
           shader.uniforms.uPlaneY.value = planeY;
           shader.uniforms.uMaskLegalIsBlack.value = maskLegalIsBlack ? 1.0 : 0.0;
           
-          // 使用硬编码参数
-          shader.uniforms.uMaskScale.value.set(IPHONE16_MASK_CONFIG.scaleX, IPHONE16_MASK_CONFIG.scaleY);
-          shader.uniforms.uMaskOffset.value.set(IPHONE16_MASK_CONFIG.offsetX, IPHONE16_MASK_CONFIG.offsetY);
-          shader.uniforms.uMaskTranslate.value.set(IPHONE16_MASK_CONFIG.translateX, IPHONE16_MASK_CONFIG.translateY);
-          shader.uniforms.uMaskFlip.value.set(IPHONE16_MASK_CONFIG.flipX ? 1 : 0, IPHONE16_MASK_CONFIG.flipY ? 1 : 0);
-          shader.uniforms.uMaskRotate.value = IPHONE16_MASK_CONFIG.rotDeg * Math.PI / 180.0;
+          // 使用基于当前模型的配置
+          const maskConfig = MASK_CONFIGS[phoneModel] || MASK_CONFIGS.iphone16;
+          shader.uniforms.uMaskScale.value.set(maskConfig.scaleX, maskConfig.scaleY);
+          shader.uniforms.uMaskOffset.value.set(maskConfig.offsetX, maskConfig.offsetY);
+          shader.uniforms.uMaskTranslate.value.set(maskConfig.translateX, maskConfig.translateY);
+          shader.uniforms.uMaskFlip.value.set(maskConfig.flipX ? 1 : 0, maskConfig.flipY ? 1 : 0);
+          shader.uniforms.uMaskRotate.value = maskConfig.rotDeg * Math.PI / 180.0;
+          if (shader.uniforms.uDepthTexel) {
+            const w = depthTexture?.image?.width || 1024
+            const h = depthTexture?.image?.height || 1024
+            shader.uniforms.uDepthTexel.value.set(1 / Math.max(1, w), 1 / Math.max(1, h))
+          }
           
           // 确保displacementMap相关的uniforms被正确设置
           if (shader.uniforms.displacementMap) {
@@ -341,7 +410,7 @@ function ReliefClippedMaterial({
             shader.uniforms.normalMap.value = normalTexture;
           }
           if (shader.uniforms.normalScale) {
-            shader.uniforms.normalScale.value.set(1.0, 1.0); // 法线强度
+            shader.uniforms.normalScale.value.set(1.35, 1.35); // 法线强度
           }
           
           if (maskTexture) {
@@ -578,7 +647,8 @@ function ReliefPlane({
   maskTexture,
   maskLegalIsBlack,
   isEraserMode,
-  onEraserDraw
+  onEraserDraw,
+  phoneModel
 }) {
   const meshRef = useRef(null)
   const [planeDims, setPlaneDims] = useState({ w: 7, h: 7 })
@@ -1294,6 +1364,7 @@ function ReliefPlane({
           maskTexture={maskTexture}
           maskLegalIsBlack={maskLegalIsBlack}
           planeY={planeY}
+          phoneModel={phoneModel}
         />
       </mesh>
       
@@ -1376,13 +1447,95 @@ function AdjustCapturePlane({ isAdjustMode, reliefPosition, onReliefPositionChan
   )
 }
 
-function CameraController({ isAdjustMode, controlsRef }) {
-  const { camera } = useThree()
+function CameraController({ isAdjustMode, isEraserMode, controlsRef, planeY }) {
+  const { camera, gl } = useThree()
   const saved = useRef({
     position: new THREE.Vector3(),
     target: new THREE.Vector3(),
   })
   const isTopDown = useRef(false)
+  const topDownTargetRef = useRef(new THREE.Vector3(0, 0, 0))
+  const topDownDistanceRef = useRef(18)
+  const BASE_TOPDOWN_DISTANCE = 18
+  const MAX_ZOOM_RATIO = 5
+  const MIN_TOPDOWN_DISTANCE = BASE_TOPDOWN_DISTANCE / MAX_ZOOM_RATIO
+  const MAX_TOPDOWN_DISTANCE = 60
+  const prevEraserModeRef = useRef(isEraserMode)
+
+  useEffect(() => {
+    if (!isAdjustMode) {
+      topDownTargetRef.current.set(0, 0, 0)
+      topDownDistanceRef.current = BASE_TOPDOWN_DISTANCE
+    }
+  }, [isAdjustMode])
+
+  useEffect(() => {
+    const wasEraserMode = prevEraserModeRef.current
+    if (isAdjustMode && wasEraserMode && !isEraserMode) {
+      // 退出擦除时，回到“调整位置”默认俯视视角
+      topDownTargetRef.current.set(0, 0, 0)
+      topDownDistanceRef.current = BASE_TOPDOWN_DISTANCE
+    }
+    prevEraserModeRef.current = isEraserMode
+  }, [isAdjustMode, isEraserMode])
+
+  useEffect(() => {
+    if (!isAdjustMode || !isEraserMode) return undefined
+    const dom = gl?.domElement
+    if (!dom) return undefined
+
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY)
+    const hitBefore = new THREE.Vector3()
+    const hitAfter = new THREE.Vector3()
+
+    const handleWheel = (e) => {
+      e.preventDefault()
+
+      const before = pointerToPlaneIntersection(e.clientX, e.clientY, camera, gl, plane, hitBefore)
+      const zoomStep = Math.exp(Math.min(Math.abs(e.deltaY), 300) * 0.0015)
+      const nextDistanceRaw = e.deltaY < 0
+        ? topDownDistanceRef.current / zoomStep
+        : topDownDistanceRef.current * zoomStep
+      const nextDistance = THREE.MathUtils.clamp(
+        nextDistanceRaw,
+        MIN_TOPDOWN_DISTANCE,
+        MAX_TOPDOWN_DISTANCE
+      )
+
+      if (Math.abs(nextDistance - topDownDistanceRef.current) < 1e-4) return
+      topDownDistanceRef.current = nextDistance
+
+      const target = topDownTargetRef.current
+      camera.position.set(target.x, topDownDistanceRef.current, target.z)
+      camera.up.set(0, 0, -1)
+      camera.lookAt(target.x, planeY, target.z)
+      camera.updateMatrixWorld(true)
+
+      if (before) {
+        const after = pointerToPlaneIntersection(e.clientX, e.clientY, camera, gl, plane, hitAfter)
+        if (after) {
+          const dx = before.x - after.x
+          const dz = before.z - after.z
+          target.x += dx
+          target.z += dz
+        }
+      }
+
+      camera.position.set(target.x, topDownDistanceRef.current, target.z)
+      camera.lookAt(target.x, planeY, target.z)
+      camera.updateMatrixWorld(true)
+
+      if (controlsRef?.current) {
+        controlsRef.current.target.set(target.x, planeY, target.z)
+        controlsRef.current.update()
+      }
+    }
+
+    dom.addEventListener("wheel", handleWheel, { passive: false })
+    return () => {
+      dom.removeEventListener("wheel", handleWheel)
+    }
+  }, [camera, gl, isAdjustMode, isEraserMode, controlsRef, planeY, MIN_TOPDOWN_DISTANCE])
 
   useFrame(() => {
     if (isAdjustMode) {
@@ -1391,9 +1544,13 @@ function CameraController({ isAdjustMode, controlsRef }) {
         saved.current.target.copy(controlsRef.current.target)
       }
       isTopDown.current = true
-      camera.position.set(0, 18, 0)
+      const target = topDownTargetRef.current
+      camera.position.set(target.x, topDownDistanceRef.current, target.z)
       camera.up.set(0, 0, -1)
-      camera.lookAt(0, 0, 0)
+      camera.lookAt(target.x, planeY, target.z)
+      if (controlsRef?.current) {
+        controlsRef.current.target.set(target.x, planeY, target.z)
+      }
     } else {
       if (isTopDown.current) {
         camera.position.copy(saved.current.position)
@@ -1423,7 +1580,29 @@ function loadMaskTexture(model) {
           tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
           tex.minFilter = THREE.LinearFilter
           tex.magFilter = THREE.LinearFilter
-          resolve(tex)
+          // 除了iPhone 16以外的模型的掩码图需要绕y轴旋转180度
+          if (model !== "iphone16") {
+            // 通过修改UV坐标来实现掩码图的旋转
+            // 创建一个新的Canvas，将原始图像旋转180度后重新创建纹理
+            const canvas = document.createElement('canvas')
+            const img = tex.image
+            canvas.width = img.width
+            canvas.height = img.height
+            const ctx = canvas.getContext('2d')
+            // 翻转图像
+            ctx.translate(canvas.width, canvas.height)
+            ctx.rotate(Math.PI)
+            ctx.drawImage(img, 0, 0)
+            // 创建新的纹理
+            const rotatedTex = new THREE.CanvasTexture(canvas)
+            rotatedTex.flipY = false
+            rotatedTex.wrapS = rotatedTex.wrapT = THREE.ClampToEdgeWrapping
+            rotatedTex.minFilter = THREE.LinearFilter
+            rotatedTex.magFilter = THREE.LinearFilter
+            resolve(rotatedTex)
+          } else {
+            resolve(tex)
+          }
         },
         undefined,
         () => resolve(null)
@@ -1518,6 +1697,10 @@ function PhoneCaseSTL({ isAdjustMode, onReady, model = "iphone16" }) {
     loader.load(path, async (geometry) => {
       let g = geometry.clone()
       g.rotateX(Math.PI / 2)
+      // 除了iPhone 16以外的模型需要绕Y轴旋转180度
+      if (model !== "iphone16") {
+        g.rotateY(Math.PI)
+      }
       g.computeBoundingBox()
       const size0 = new THREE.Vector3()
       g.boundingBox.getSize(size0)
@@ -1616,6 +1799,8 @@ export function Scene3D({
   const [planeY, setPlaneY] = useState(DEFAULT_PLANE_Y)
   const [maskTexture, setMaskTexture] = useState(null)
   const [maskLegalIsBlack, setMaskLegalIsBlack] = useState(false)
+  
+
 
   return (
     <>
@@ -1635,7 +1820,7 @@ export function Scene3D({
       />
 
       <group>
-        {phoneModel === "iphone16" && (
+        {phoneModel && (
           <PhoneCaseSTL
             isAdjustMode={isAdjustMode}
             model={phoneModel}
@@ -1666,6 +1851,7 @@ export function Scene3D({
           maskLegalIsBlack={maskLegalIsBlack}
           isEraserMode={isEraserMode}
           onEraserDraw={onEraserDraw}
+          phoneModel={phoneModel}
         />
         {(isAdjustMode && isGenerated && !isEraserMode) && (
           <AdjustCapturePlane
@@ -1675,6 +1861,8 @@ export function Scene3D({
             planeY={planeY}
           />
         )}
+        
+
       </group>
 
       <OrbitControls
@@ -1690,7 +1878,13 @@ export function Scene3D({
         mouseWheelSpeed={2}
       />
 
-      <CameraController isAdjustMode={isAdjustMode} controlsRef={controlsRef} />
+      <CameraController
+        isAdjustMode={isAdjustMode}
+        isEraserMode={isEraserMode}
+        controlsRef={controlsRef}
+        planeY={planeY}
+      />
+
     </>
   )
 }

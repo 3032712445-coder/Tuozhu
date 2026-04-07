@@ -278,34 +278,44 @@ def run_depth(image_path: str, out_path: str):
         bg_thresh = (otsu_thresh / 255.0) * 0.5 
         print(f"✂️ 背景剔除阈值: {bg_thresh:.3f} (Otsu: {otsu_thresh})")
         
-        # 将背景压平为 0
-        depth[depth < bg_thresh] = 0.0
+        # 将硬阈值改为软阈值羽化，减少主体边缘锯齿
+        # feather_width 越大，边缘越柔和；保持在小范围内避免丢失细节
+        feather_width = 0.03
+        alpha = (depth - (bg_thresh - feather_width)) / (2.0 * feather_width + 1e-6)
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+        # 仅对 alpha 做轻微平滑，避免把主体内部纹理抹掉
+        alpha = cv2.GaussianBlur(alpha, (0, 0), 1.2)
+        depth = depth * alpha
         
         # 重新归一化前景部分，拉伸对比度
-        mask = depth > 0
+        mask = alpha > 0.05
         if mask.any():
             d_min = depth[mask].min()
             d_max = depth[mask].max()
             depth[mask] = (depth[mask] - d_min) / (d_max - d_min + 1e-6)
 
         # ========= 5. 纹理细节叠加 (Texture Detail Enhancement) =========
-        # 提取原图的高频细节 (High-pass filter)
-        # 使用原始图像来提取高频细节，确保尺寸与depth一致
+        # 使用多尺度高频 + 局部对比度增强，提升面部五官等细节
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # 确保 gray_image 尺寸与 depth 一致
         gray_image = cv2.resize(gray_image, (W, H))
         gray_image = gray_image.astype(np.float32) / 255.0
         
-        # 使用高斯模糊提取低频，原图减去低频得到高频
-        blurred_gray = cv2.GaussianBlur(gray_image, (0, 0), 3.0)
-        high_pass = gray_image - blurred_gray
-        
-        # 增强高频细节权重
-        detail_weight = 0.15
-        
-        # 叠加细节 (只在非背景区域叠加)
-        # 细节可能为负，所以叠加后需要 clip
+        # CLAHE 提升局部对比度（在人物面部区域尤其有效）
+        gray_u8 = np.clip(gray_image * 255.0, 0, 255).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray_clahe = clahe.apply(gray_u8).astype(np.float32) / 255.0
+
+        # 多尺度高频：同时保留细小纹理与中尺度起伏
+        blur_fine = cv2.GaussianBlur(gray_clahe, (0, 0), 1.2)
+        blur_mid = cv2.GaussianBlur(gray_clahe, (0, 0), 2.8)
+        high_pass_fine = gray_clahe - blur_fine
+        high_pass_mid = gray_clahe - blur_mid
+        high_pass = 0.65 * high_pass_fine + 0.35 * high_pass_mid
+
+        # 适度提高细节权重，且仅在前景区域生效
+        detail_weight = 0.22
         depth[mask] += high_pass[mask] * detail_weight
         depth = np.clip(depth, 0.0, 1.0)
 
@@ -315,7 +325,7 @@ def run_depth(image_path: str, out_path: str):
         # ========= 7. 最终输出转换 =========
         depth = (depth * 255.0).astype(np.uint8)
 
-        # ========= 8. 轻微平滑消除噪点 =========
+        # ========= 8. 轻微平滑消除噪点与边缘台阶 =========
         depth = cv2.GaussianBlur(depth, (3, 3), 0)
 
         print(f"💾 正在保存结果到: {out_path}")
@@ -489,6 +499,4 @@ def get_output_file(file):
         return FileResponse(file_path)
     else:
         return {"error": "File not found"}
-
-
 

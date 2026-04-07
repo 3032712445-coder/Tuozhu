@@ -188,11 +188,17 @@ def run_depth(image_path: str, out_path: str):
         bg_thresh = (otsu_thresh / 255.0) * 0.5 
         print(f"✂️ 背景剔除阈值: {bg_thresh:.3f} (Otsu: {otsu_thresh})")
         
-        # 将背景压平为 0
-        depth[depth < bg_thresh] = 0.0
+        # 将硬阈值改为软阈值羽化，减少主体边缘锯齿
+        # feather_width 越大，边缘越柔和；保持在小范围内避免丢失细节
+        feather_width = 0.03
+        alpha = (depth - (bg_thresh - feather_width)) / (2.0 * feather_width + 1e-6)
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+        # 仅对 alpha 做轻微平滑，避免把主体内部纹理抹掉
+        alpha = cv2.GaussianBlur(alpha, (0, 0), 1.2)
+        depth = depth * alpha
         
         # 重新归一化前景部分，拉伸对比度
-        mask = depth > 0
+        mask = alpha > 0.05
         if mask.any():
             d_min = depth[mask].min()
             d_max = depth[mask].max()
@@ -224,7 +230,7 @@ def run_depth(image_path: str, out_path: str):
         # ========= 7. 最终输出转换 =========
         depth = (depth * 255.0).astype(np.uint8)
 
-        # ========= 8. 轻微平滑消除噪点 =========
+        # ========= 8. 轻微平滑消除噪点与边缘台阶 =========
         depth = cv2.GaussianBlur(depth, (3, 3), 0)
 
         print(f"💾 正在保存结果到: {out_path}")

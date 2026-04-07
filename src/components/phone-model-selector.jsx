@@ -9,6 +9,8 @@ export function PhoneModelSelector({ value, onValueChange }) {
       >
         <option value="">请选择型号</option>
         <option value="iphone16">iPhone 16</option>
+        <option value="iphone16pro">iPhone 16 Pro</option>
+        <option value="iphone16promax">iPhone 16 Pro Max</option>
       </select>
     </div>
   )
