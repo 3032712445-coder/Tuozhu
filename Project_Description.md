@@ -13,6 +13,7 @@
 
 ### 📂 目录结构概览
 
+#### 前端 (Frontend)
 ```
 Tuozhu/
 ├── src/                    # 前端源代码 (React + Three.js)
@@ -28,12 +29,6 @@ Tuozhu/
 │   ├── App.jsx             # 主应用逻辑 (STL 导出、状态管理、深度图生成)
 │   ├── main.jsx            # React 应用入口
 │   └── index.css           # 全局样式与 Tailwind 引入
-├── backend/                # 深度估计服务
-│   └── depth_service/
-│       ├── api.py          # 深度图生成 API (基于 PyTorch)
-│       ├── __init__.py      # Python 包初始化文件
-│       ├── uploads/         # 临时上传图片缓存目录
-│       └── outputs/         # 生成的深度图保存目录
 ├── public/                 # 静态资源
 │   ├── phonecase/          # 手机壳模型和掩码图
 │   │   ├── iphone16.stl     # iPhone 16 手机壳 3D 模型
@@ -44,20 +39,39 @@ Tuozhu/
 │   │   └── iphone16promax.png # iPhone 16 Pro Max 手机壳掩码图
 │   ├── test-depth.jpg       # 测试用深度贴图
 │   └── test-depth9.jpg      # 测试用深度贴图
-├── main.py                 # AI 绘图服务 (对接智谱 AI)
+├── index.html              # Vite 入口 HTML
 ├── package.json            # 前端依赖配置
 ├── package-lock.json       # 前端依赖锁定文件
-├── requirements.txt        # 后端依赖配置
 ├── vite.config.js          # Vite 构建配置
 ├── tailwind.config.js      # Tailwind CSS 配置
 ├── postcss.config.js       # PostCSS 配置
-├── index.html              # Vite 入口 HTML
+```
+
+#### 后端 (Backend)
+```
+Tuozhu/
+├── backend/                # 深度估计服务
+│   └── depth_service/
+│       ├── api.py          # 深度图生成 API (备份)
+│       ├── __init__.py      # Python 包初始化文件
+│       ├── uploads/         # 临时上传图片缓存目录
+│       └── outputs/         # 生成的深度图保存目录
+│       └──pixel-perfect-depth/ #深度图生成模型所在目录
+├── main.py                 # AI 绘图与深度图生成服务
+├── requirements.txt        # 后端依赖配置
 ├── install_gpu_deps.py     # GPU 依赖自动安装脚本
 ├── test_gpu.py             # GPU 测试脚本
+└── ...                     # 其他后端相关文件
+```
+
+#### 其他文件
+```
+Tuozhu/
 ├── Project_Description.md  # 项目说明文档
 ├── README.md               # 项目使用说明
 ├── .gitignore              # Git 忽略文件配置
-└── .gitmodules             # Git 子模块配置
+├── .gitmodules             # Git 子模块配置
+└── ...                     # 其他配置文件
 ```
 
 ### 核心模块解析
