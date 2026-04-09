@@ -18,18 +18,46 @@ Tuozhu/
 ├── src/                    # 前端源代码 (React + Three.js)
 │   ├── components/         # UI 组件与 3D 场景组件
 │   │   ├── Scene3D.jsx     # 核心 3D 预览场景 (含浮雕渲染与擦除逻辑)
-│   │   ├── preview-panel.jsx # 左侧控制面板 (上传、生成、调整)
-│   │   └── ...
-│   ├── App.jsx             # 主应用逻辑 (STL 导出、状态管理)
-│   └── ...
+│   │   ├── preview-panel.jsx # 右侧预览区容器
+│   │   ├── emboss-parameters.jsx # 左侧浮雕参数面板
+│   │   ├── image-input-area.jsx # 图片上传与 AI 生成功能
+│   │   ├── phone-model-selector.jsx # 手机型号选择组件
+│   │   ├── ErrorBoundary.jsx # 错误边界组件
+│   │   └── ui/
+│   │       └── button.jsx   # 通用按钮组件
+│   ├── App.jsx             # 主应用逻辑 (STL 导出、状态管理、深度图生成)
+│   ├── main.jsx            # React 应用入口
+│   └── index.css           # 全局样式与 Tailwind 引入
 ├── backend/                # 深度估计服务
 │   └── depth_service/
 │       ├── api.py          # 深度图生成 API (基于 PyTorch)
-│       └── ...
+│       ├── __init__.py      # Python 包初始化文件
+│       ├── uploads/         # 临时上传图片缓存目录
+│       └── outputs/         # 生成的深度图保存目录
+├── public/                 # 静态资源
+│   ├── phonecase/          # 手机壳模型和掩码图
+│   │   ├── iphone16.stl     # iPhone 16 手机壳 3D 模型
+│   │   ├── iphone16.png     # iPhone 16 手机壳掩码图
+│   │   ├── iphone16pro.stl  # iPhone 16 Pro 手机壳 3D 模型
+│   │   ├── iphone16pro.png  # iPhone 16 Pro 手机壳掩码图
+│   │   ├── iphone16promax.stl # iPhone 16 Pro Max 手机壳 3D 模型
+│   │   └── iphone16promax.png # iPhone 16 Pro Max 手机壳掩码图
+│   ├── test-depth.jpg       # 测试用深度贴图
+│   └── test-depth9.jpg      # 测试用深度贴图
 ├── main.py                 # AI 绘图服务 (对接智谱 AI)
-├── public/                 # 静态资源 (手机壳模型等)
 ├── package.json            # 前端依赖配置
-└── requirements.txt        # 后端依赖配置
+├── package-lock.json       # 前端依赖锁定文件
+├── requirements.txt        # 后端依赖配置
+├── vite.config.js          # Vite 构建配置
+├── tailwind.config.js      # Tailwind CSS 配置
+├── postcss.config.js       # PostCSS 配置
+├── index.html              # Vite 入口 HTML
+├── install_gpu_deps.py     # GPU 依赖自动安装脚本
+├── test_gpu.py             # GPU 测试脚本
+├── Project_Description.md  # 项目说明文档
+├── README.md               # 项目使用说明
+├── .gitignore              # Git 忽略文件配置
+└── .gitmodules             # Git 子模块配置
 ```
 
 ### 核心模块解析
@@ -52,7 +80,7 @@ Tuozhu/
 本平台操作流程简单直观，仅需五步即可完成定制。
 
 ### 第一步：选择手机型号
-目前只支持iphone16，之后会继续扩充，选取后可以在右侧预览区看到模型
+目前支持 iPhone 16、iPhone 16 Pro 和 iPhone 16 Pro Max，选取后可以在右侧预览区看到对应的手机壳模型
 
 ### 第二步：获取图片
 您有两种方式获取想要定制的图案：
